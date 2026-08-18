@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { buildSourceUnits, refineSourceUnit } from "../src/source";
+import { buildSourceUnits, expandInitialSourceUnits, refineSourceUnit } from "../src/source";
 import type { SourceUnit } from "../src/types";
 
 describe("checkpoint source ledger", () => {
@@ -86,5 +86,23 @@ describe("source refinement", () => {
     expect(parts.map((part) => part.text).join("")).toBe(text);
     expect(parts.map((part) => part.id)).toEqual(["u0001.1", "u0001.2", "u0001.3"]);
     expect(parts.every((part) => part.entryIds[0] === "message-1")).toBe(true);
+  });
+
+  test("pre-splits one large initial turn before the analyzer builds the first decision", () => {
+    const text = `${"requirements and decisions ".repeat(35)}\n\n${"implementation and evidence ".repeat(35)}`;
+    const source: SourceUnit = {
+      id: "u0001",
+      entryIds: ["message-1", "message-2"],
+      text,
+      tokens: 600,
+      hash: "original",
+    };
+
+    const units = expandInitialSourceUnits([source], 3);
+
+    expect(units.length).toBeGreaterThanOrEqual(2);
+    expect(units.length).toBeLessThanOrEqual(3);
+    expect(units.map((unit) => unit.text).join("")).toBe(text);
+    expect(units.every((unit) => unit.entryIds.join(",") === "message-1,message-2")).toBe(true);
   });
 });

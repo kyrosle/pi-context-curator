@@ -735,7 +735,13 @@ async function runCuratorSession(
     return;
   }
 
-  const prepared = prepareSource(ctx, focus.trim(), config.rawTailTokens, config.language);
+  const prepared = prepareSource(
+    ctx,
+    focus.trim(),
+    config.rawTailTokens,
+    config.language,
+    config.maxBlocksPerSplit,
+  );
   const nodes = await analyzeWithLoading(
     ctx,
     prepared.units,

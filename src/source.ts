@@ -169,6 +169,12 @@ export function refineSourceUnit(unit: SourceUnit, maxParts: 2 | 3): SourceUnit[
   }));
 }
 
+/** Ensure the first Curator decision is useful even when the prefix is one large turn. */
+export function expandInitialSourceUnits(units: SourceUnit[], maxParts: 2 | 3): SourceUnit[] {
+  if (units.length !== 1) return units;
+  return refineSourceUnit(units[0], maxParts);
+}
+
 function estimateEntriesTokens(entries: SessionEntry[]): number {
   let total = 0;
   for (const entry of entries) {
@@ -184,6 +190,7 @@ export function prepareSource(
   focus: string,
   rawTailTokens: number,
   language: CuratorLanguage = "zh",
+  maxBlocksPerSplit: 2 | 3 = 3,
 ): PreparedSource {
   const leafId = ctx.sessionManager.getLeafId();
   if (!leafId) {
@@ -214,9 +221,18 @@ export function prepareSource(
     throw new Error(localize(language, "无法确定安全的 raw-tail 边界。", "Could not determine a safe raw-tail boundary."));
   }
 
-  const units = buildSourceUnits(prefixEntries);
+  const units = expandInitialSourceUnits(buildSourceUnits(prefixEntries), maxBlocksPerSplit);
   if (units.length === 0) {
     throw new Error(localize(language, "压缩前缀中没有可见消息。", "The compactable prefix contains no visible messages."));
+  }
+  if (units.length === 1) {
+    throw new Error(
+      localize(
+        language,
+        "可压缩前缀只有一个过短的来源单元，无法形成有意义的 2–3 块初始选择。",
+        "The compactable prefix has only one short source unit and cannot form a meaningful initial 2–3-block choice.",
+      ),
+    );
   }
 
   const sourceHash = sha256(units.map((unit) => `${unit.id}:${unit.hash}`).join("\n"));

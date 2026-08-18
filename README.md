@@ -33,6 +33,7 @@ The analyzer proposes structure; it never applies compaction by itself. Final ap
 ## Features
 
 - Interactive 2–3-way context partitioning.
+- A monolithic compactable turn is losslessly pre-split, so the first Curator window still starts with 2–3 choices.
 - Recursive splitting without summarizing a summary.
 - Three retention modes: `summary`, `exact`, and `drop`.
 - A newest raw tail that is always kept verbatim.
