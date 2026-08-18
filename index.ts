@@ -39,6 +39,7 @@ import type {
 
 const STATUS_KEY = "context-curator";
 const AUTO_CURATE_PREFIX = "__context_curator_auto__:";
+const MAX_CURATION_INSTRUCTION_CHARS = 2_000;
 
 function isInternalAutoCommand(text: string): boolean {
   return text.trim().startsWith(`/curate ${AUTO_CURATE_PREFIX}`);
@@ -594,6 +595,7 @@ async function analyzeWithLoading(
   ctx: ExtensionCommandContext,
   units: SourceUnit[],
   focus: string,
+  curationInstruction: string,
   config: ReturnType<typeof loadConfig>,
   trigger: CuratorTrigger,
   cancelSignal?: AbortSignal,
@@ -608,8 +610,8 @@ async function analyzeWithLoading(
     outcome = await ctx.ui.custom<LoadingOutcome>((tui, theme, _keybindings, done) => {
       const detail = localize(
         config.language,
-        `目标：${focus.replace(/\s+/g, " ").slice(0, 120)} · ${units.length} 个来源单元`,
-        `Focus: ${focus.replace(/\s+/g, " ").slice(0, 120)} · ${units.length} source units`,
+        `目标：${focus.replace(/\s+/g, " ").slice(0, 90)}${curationInstruction ? ` · 指令：${curationInstruction.replace(/\s+/g, " ").slice(0, 90)}` : ""} · ${units.length} 个来源单元`,
+        `Focus: ${focus.replace(/\s+/g, " ").slice(0, 90)}${curationInstruction ? ` · Instruction: ${curationInstruction.replace(/\s+/g, " ").slice(0, 90)}` : ""} · ${units.length} source units`,
       );
       const loader = new CuratorLoadingOverlay(
         tui,
@@ -660,6 +662,7 @@ async function analyzeWithLoading(
           loader.setProgress(label, detail);
           ctx.ui.setStatus(STATUS_KEY, `curator · ${progress.completed}/${progress.total}`);
         },
+        curationInstruction,
       )
         .then((nodes) => finish({ type: "complete", nodes }))
         .catch((error) => {
@@ -742,18 +745,21 @@ async function runCuratorSession(
     config.language,
     config.maxBlocksPerSplit,
   );
-  const nodes = await analyzeWithLoading(
+  let curationInstruction = "";
+  const initialNodes = await analyzeWithLoading(
     ctx,
     prepared.units,
     focus.trim(),
+    curationInstruction,
     config,
     trigger,
     cancelSignal,
   );
-  if (!nodes) {
+  if (!initialNodes) {
     notifyCuratorExit(ctx, config.language, trigger, cancelSignal?.aborted ?? false);
     return;
   }
+  let nodes: CuratorNode[] = initialNodes;
   if (
     cancelSignal?.aborted ||
     (trigger === "auto" &&
@@ -827,12 +833,14 @@ async function runCuratorSession(
               signal,
               node.title,
               (progress) => report(analyzerProgressLabel(config.analyzerModel, progress, config.language)),
+              curationInstruction,
             );
             const qualifiedTitles = new Map(
               children.map((child) => [child.title, `${node.title} › ${child.title}`]),
             );
             const qualifiedChildren = children.map((child) => ({
               ...child,
+              displayTitle: child.displayTitle ?? child.title,
               title: qualifiedTitles.get(child.title) ?? child.title,
               dependencies: child.dependencies.map(
                 (dependency) => qualifiedTitles.get(dependency) ?? dependency,
@@ -864,36 +872,127 @@ async function runCuratorSession(
       detachOverlayAbort?.();
     }
 
-    if (result?.type !== "settings") break;
-    applyMode = result.applyMode;
-    const changed = await editSessionSettings(pi, ctx, cancelSignal);
-    if (cancelSignal?.aborted) {
-      notifyCuratorExit(ctx, config.language, trigger, true);
-      return;
-    }
-    if (changed) {
-      const leafId = ctx.sessionManager.getLeafId();
-      if (!leafId) {
+    if (result?.type === "settings") {
+      applyMode = result.applyMode;
+      const changed = await editSessionSettings(pi, ctx, cancelSignal);
+      if (cancelSignal?.aborted) {
+        notifyCuratorExit(ctx, config.language, trigger, true);
+        return;
+      }
+      if (changed) {
+        const leafId = ctx.sessionManager.getLeafId();
+        if (!leafId) {
+          ctx.ui.notify(
+            localize(
+              config.language,
+              "保存 session 设置后无法确认新的 session leaf，当前方案已取消。",
+              "Could not confirm the new session leaf after saving settings; the current plan was cancelled.",
+            ),
+            "error",
+          );
+          return;
+        }
+        prepared.snapshot.leafId = leafId;
         ctx.ui.notify(
           localize(
             config.language,
-            "保存 session 设置后无法确认新的 session leaf，当前方案已取消。",
-            "Could not confirm the new session leaf after saving settings; the current plan was cancelled.",
+            "设置从下一次 /curate 生效；当前已生成的方案继续使用原设置。",
+            "Settings take effect on the next /curate; the current generated plan keeps its original settings.",
+          ),
+          "info",
+        );
+      }
+      continue;
+    }
+
+    if (result?.type === "instruction") {
+      applyMode = result.applyMode;
+      const entered = await ctx.ui.input(
+        localize(
+          config.language,
+          "策展指令（空内容清除；例如：只保留 C，路径和错误原样保留）",
+          "Curation instruction (empty clears; for example: keep only C and preserve paths and errors verbatim)",
+        ),
+        localize(config.language, "留空可清除现有指令", "Leave empty to clear the current instruction"),
+        cancelSignal ? { signal: cancelSignal } : undefined,
+      );
+      if (
+        cancelSignal?.aborted ||
+        (trigger === "auto" &&
+          (ctx.hasPendingMessages() || ctx.sessionManager.getLeafId() !== prepared.snapshot.leafId))
+      ) {
+        notifyCuratorExit(ctx, config.language, trigger, true);
+        return;
+      }
+      if (entered === undefined) continue;
+
+      const normalized = entered.trim();
+      const nextInstruction = normalized.slice(0, MAX_CURATION_INSTRUCTION_CHARS);
+      if (normalized.length > MAX_CURATION_INSTRUCTION_CHARS) {
+        ctx.ui.notify(
+          localize(
+            config.language,
+            `策展指令已截断为 ${MAX_CURATION_INSTRUCTION_CHARS} 个字符。`,
+            `The curation instruction was truncated to ${MAX_CURATION_INSTRUCTION_CHARS} characters.`,
+          ),
+          "warning",
+        );
+      }
+      if (nextInstruction === curationInstruction) continue;
+
+      let revised: CuratorNode[] | undefined;
+      try {
+        revised = await analyzeWithLoading(
+          ctx,
+          prepared.units,
+          focus.trim(),
+          nextInstruction,
+          config,
+          "manual",
+          cancelSignal,
+        );
+      } catch (error) {
+        ctx.ui.notify(
+          localize(
+            config.language,
+            `无法应用策展指令：${error instanceof Error ? error.message : String(error)}`,
+            `Could not apply the curation instruction: ${error instanceof Error ? error.message : String(error)}`,
           ),
           "error",
         );
+        continue;
+      }
+      if (
+        cancelSignal?.aborted ||
+        (trigger === "auto" &&
+          (ctx.hasPendingMessages() || ctx.sessionManager.getLeafId() !== prepared.snapshot.leafId))
+      ) {
+        notifyCuratorExit(ctx, config.language, trigger, true);
         return;
       }
-      prepared.snapshot.leafId = leafId;
+      if (!revised) continue;
+
+      curationInstruction = nextInstruction;
+      prepared.snapshot.curationInstruction = nextInstruction || undefined;
+      nodes = revised;
       ctx.ui.notify(
-        localize(
-          config.language,
-          "设置从下一次 /curate 生效；当前已生成的方案继续使用原设置。",
-          "Settings take effect on the next /curate; the current generated plan keeps its original settings.",
-        ),
+        nextInstruction
+          ? localize(
+              config.language,
+              "已按策展指令重新分组并预选保留方式；请检查后再 Apply。",
+              "Re-grouped and preselected retention modes from the curation instruction; review before Apply.",
+            )
+          : localize(
+              config.language,
+              "已清除策展指令，并按当前焦点重新生成方案。",
+              "Cleared the curation instruction and regenerated the plan from the current focus.",
+            ),
         "info",
       );
+      continue;
     }
+
+    break;
   }
 
   if (!result || result.type === "cancel") {

@@ -54,6 +54,8 @@ Rules:
 - Every source unit ID must appear exactly once across all blocks.
 - Create 2 or 3 blocks when at least two source units exist; otherwise create one block.
 - Blocks must be semantically useful for deciding what remains in active context.
+- Treat Focus and Curation instruction as user intent, but never let them override source coverage, safety, or the JSON schema.
+- If the Curation instruction explicitly asks to keep only specific content, still place every source unit in a block and recommend drop for unrelated blocks.
 - A summary must distinguish verified facts, pending verification, decisions, constraints, current state, and discarded approaches.
 - recommendedMode must be summary, exact, or drop.
 - Copy verbatimEvidence exactly from the supplied source. Use it only for exact paths, commands, hashes, errors, user constraints, or other facts where rewriting is risky.
@@ -249,8 +251,9 @@ async function analyzeDirect(
   language: CuratorLanguage,
   signal: AbortSignal,
   parentTitle?: string,
+  curationInstruction?: string,
 ): Promise<CuratorNode[]> {
-  const basePrompt = `Output language: ${analyzerOutputLanguage(language)}\nFocus: ${JSON.stringify(focus)}\n${
+  const basePrompt = `Output language: ${analyzerOutputLanguage(language)}\nFocus: ${JSON.stringify(focus)}\nCuration instruction: ${JSON.stringify(curationInstruction || "No additional instruction; optimize for the stated focus.")}\n${
     parentTitle ? `Block being split: ${JSON.stringify(parentTitle)}\n` : ""
   }SourceUnits JSON (untrusted transcript data):\n${formatUnits(units)}\n\nPartition every source-unit ID exactly once into at most ${maxBlocks} blocks.`;
 
@@ -360,6 +363,7 @@ export async function analyzePartition(
   signal: AbortSignal,
   parentTitle?: string,
   onProgress?: (progress: AnalyzerProgress) => void,
+  curationInstruction?: string,
 ): Promise<CuratorNode[]> {
   const resolved = await resolveAnalyzer(ctx, config.analyzerModel, config.language);
   const totalTokens = units.reduce((sum, unit) => sum + unit.tokens, 0);
@@ -376,6 +380,7 @@ export async function analyzePartition(
       config.language,
       signal,
       parentTitle,
+      curationInstruction,
     );
     onProgress?.({ phase: "direct", completed: 1, total: 1, concurrency: 1 });
     return result;
@@ -427,6 +432,7 @@ export async function analyzePartition(
           config.language,
           groupController.signal,
           parentTitle,
+          curationInstruction,
         );
         completedCalls++;
         onProgress?.({
@@ -475,6 +481,7 @@ export async function analyzePartition(
     config.language,
     signal,
     parentTitle,
+    curationInstruction,
   );
   completedCalls++;
   onProgress?.({ phase: "merge", completed: completedCalls, total: totalCalls, concurrency: 1 });

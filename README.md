@@ -34,6 +34,8 @@ The analyzer proposes structure; it never applies compaction by itself. Final ap
 
 - Interactive 2–3-way context partitioning.
 - A monolithic compactable turn is losslessly pre-split, so the first Curator window still starts with 2–3 choices.
+- Natural-language curation instructions can re-group blocks and preselect what to keep, preserve verbatim, or drop.
+- Deep hierarchies use short local labels, width-aware metadata, and a wrapped selected-title area instead of repeated parent paths.
 - Recursive splitting without summarizing a summary.
 - Three retention modes: `summary`, `exact`, and `drop`.
 - A newest raw tail that is always kept verbatim.
@@ -112,6 +114,7 @@ With no explicit focus argument, `/curate` uses the newest user request as the n
 | `E` | Mark the focused leaf as `exact`. |
 | `Enter` / `Right` | Split a leaf into 2–3 children, or expand an existing branch. |
 | `Left` | Collapse a branch. |
+| `F` | Enter or replace a natural-language curation instruction and regenerate the plan. |
 | `I` | Inspect summary, rationale, dependencies, evidence, and source IDs. |
 | `P` | Preview the deterministic checkpoint. |
 | `S` | Open session settings. Saved values apply to the next `/curate`. |
@@ -121,6 +124,26 @@ With no explicit focus argument, `/curate` uses the newest user request as the n
 | `Esc` / `Q` | Cancel a manual Curator, or skip an automatic Curator and return to chat. |
 
 While a split is running, `Esc` / `Q` cancels only that split and returns to the tree.
+
+## Natural-language curation instructions
+
+Press `F` in the Curator and describe the result you want, for example:
+
+```text
+Keep only the implementation and validation for C. Drop the old A and B approaches. Preserve paths, errors, and commands verbatim.
+```
+
+The analyzer re-partitions the same source snapshot and initializes each leaf from its recommended `summary`, `exact`, or `drop` mode. An instruction such as “keep only C” therefore keeps A and B visible as unchecked `drop` candidates instead of silently omitting their source IDs. You can inspect and override every recommendation before Apply; high-risk drops still require confirmation.
+
+Important boundaries:
+
+- instructions affect only the compactable prefix; the newest raw tail remains verbatim;
+- `drop` removes content from active model context, not from Pi's append-only session history;
+- all source units must still pass the disjoint 100% coverage check;
+- the instruction is limited to 2,000 characters, and submitting an empty value clears it;
+- applying the regenerated checkpoint remains manual.
+
+The accepted instruction is recorded in the checkpoint so the next model can understand why the context was narrowed.
 
 ## Automatic mode and chat priority
 

@@ -45,7 +45,7 @@ describe("analyzer dispatch", () => {
                       title: "Requirements",
                       summary: "Keep the constraint.",
                       sourceUnitIds: ["u0001"],
-                      recommendedMode: "summary",
+                      recommendedMode: "drop",
                       risk: "high",
                       rationale: "Needed next.",
                       dependencies: [],
@@ -78,6 +78,9 @@ describe("analyzer dispatch", () => {
       "finish validation",
       { ...DEFAULT_CONFIG, language: "en" },
       new AbortController().signal,
+      undefined,
+      undefined,
+      "keep only validation evidence",
     );
 
     expect(nodes).toHaveLength(2);
@@ -85,7 +88,12 @@ describe("analyzer dispatch", () => {
     expect(capturedOptions?.reasoningEffort).toBe("low");
     expect(capturedOptions?.maxTokens).toBe(8_000);
     expect(capturedContext?.systemPrompt).toContain("in English");
+    expect(capturedContext?.systemPrompt).toContain("recommend drop for unrelated blocks");
     expect(capturedContext?.messages[0]?.content[0]?.text).toContain("Output language: English");
+    expect(capturedContext?.messages[0]?.content[0]?.text).toContain(
+      'Curation instruction: "keep only validation evidence"',
+    );
+    expect(nodes[0]?.mode).toBe("drop");
   });
 
   test("runs independent hierarchy groups with bounded concurrency before one merge", async () => {

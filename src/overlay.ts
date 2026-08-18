@@ -16,6 +16,7 @@ import {
   compileCheckpoint,
   dependencyWarnings,
   leafNodes,
+  nodeDisplayTitle,
   nodeProjectedTokens,
   nodeSourceTokens,
 } from "./compiler";
@@ -55,6 +56,14 @@ function wrapInBox(lines: string[], width: number, color: (text: string) => stri
     }),
     bottom,
   ];
+}
+
+function wrapLimited(text: string, width: number, maxLines: number): string[] {
+  const lines = wrapTextWithAnsi(text, Math.max(4, width));
+  if (lines.length <= maxLines) return lines;
+  const visible = lines.slice(0, maxLines);
+  visible[maxLines - 1] = `${truncateToWidth(visible[maxLines - 1] ?? "", Math.max(1, width - 1))}…`;
+  return visible;
 }
 
 function modeGlyph(node: CuratorNode): string {
@@ -127,10 +136,18 @@ export class CuratorOverlay implements Component {
     return Math.max(9, Math.floor(this.tui.terminal.rows * 0.82) - 10);
   }
 
+  private treeListHeight(): number {
+    return Math.max(4, this.bodyHeight() - 3);
+  }
+
+  private pageHeight(): number {
+    return this.preview || this.inspect ? this.bodyHeight() : this.treeListHeight();
+  }
+
   private clamp(): void {
     const rows = this.rows();
     this.focusIndex = Math.max(0, Math.min(this.focusIndex, Math.max(0, rows.length - 1)));
-    const height = this.bodyHeight();
+    const height = this.pageHeight();
     if (this.focusIndex < this.scrollOffset) this.scrollOffset = this.focusIndex;
     if (this.focusIndex >= this.scrollOffset + height) this.scrollOffset = this.focusIndex - height + 1;
     this.scrollOffset = Math.max(0, this.scrollOffset);
@@ -189,8 +206,8 @@ export class CuratorOverlay implements Component {
     this.startSpinner(
       localize(
         this.config.language,
-        `准备拆分“${node.title}”`,
-        `Preparing to split “${node.title}”`,
+        `准备拆分“${nodeDisplayTitle(node)}”`,
+        `Preparing to split “${nodeDisplayTitle(node)}”`,
       ),
     );
     this.tui.requestRender();
@@ -240,8 +257,8 @@ export class CuratorOverlay implements Component {
           ? [
               localize(
                 this.config.language,
-                `将排除高风险块：${joinLocalized(this.config.language, highRiskDrops.map((node) => node.title))}`,
-                `High-risk blocks will be excluded: ${joinLocalized(this.config.language, highRiskDrops.map((node) => node.title))}`,
+                `将排除高风险块：${joinLocalized(this.config.language, highRiskDrops.map(nodeDisplayTitle))}`,
+                `High-risk blocks will be excluded: ${joinLocalized(this.config.language, highRiskDrops.map(nodeDisplayTitle))}`,
               ),
             ]
           : []),
@@ -305,8 +322,8 @@ export class CuratorOverlay implements Component {
     }
     if (matchesKey(data, Key.up)) this.focusIndex--;
     else if (matchesKey(data, Key.down)) this.focusIndex++;
-    else if (matchesKey(data, "pageUp")) this.focusIndex -= this.bodyHeight();
-    else if (matchesKey(data, "pageDown")) this.focusIndex += this.bodyHeight();
+    else if (matchesKey(data, "pageUp")) this.focusIndex -= this.pageHeight();
+    else if (matchesKey(data, "pageDown")) this.focusIndex += this.pageHeight();
     else if (matchesKey(data, Key.home)) this.focusIndex = 0;
     else if (matchesKey(data, Key.end)) this.focusIndex = this.rows().length - 1;
     else if (data === " ") {
@@ -331,6 +348,9 @@ export class CuratorOverlay implements Component {
     } else if (data.toLowerCase() === "h") {
       this.applyMode = this.applyMode === "boundary" ? "handoff" : "boundary";
       this.resetConfirmation();
+    } else if (data.toLowerCase() === "f") {
+      this.done({ type: "instruction", applyMode: this.applyMode });
+      return;
     } else if (data.toLowerCase() === "s") {
       this.done({ type: "settings", applyMode: this.applyMode });
       return;
@@ -348,21 +368,40 @@ export class CuratorOverlay implements Component {
     const rows = this.rows();
     this.clamp();
     const height = this.bodyHeight();
-    const visible = rows.slice(this.scrollOffset, this.scrollOffset + height);
+    const listHeight = this.treeListHeight();
+    const visible = rows.slice(this.scrollOffset, this.scrollOffset + listHeight);
     const result = visible.map((row, offset) => {
       const node = row.node;
       const branch = node.children?.length ? (this.expanded.has(node.id) ? "▾" : "▸") : " ";
       const source = nodeSourceTokens(node, this.unitById);
       const projected = nodeProjectedTokens(node, this.unitById);
       const riskColor = node.risk === "high" ? "error" : node.risk === "medium" ? "warning" : "muted";
-      const base = `${"  ".repeat(row.depth)}${branch} [${modeGlyph(node)}] ${node.title}  ${fmtTokens(source)} → ${fmtTokens(projected)}  ${this.theme.fg(riskColor, displayRisk(this.config.language, node.risk))}`;
+      const prefix = `${"  ".repeat(row.depth)}${branch} [${modeGlyph(node)}] `;
+      const suffix = `  ${fmtTokens(source)} → ${fmtTokens(projected)}  ${this.theme.fg(riskColor, displayRisk(this.config.language, node.risk))}`;
+      const rowWidth = Math.max(10, width - 2);
+      const titleWidth = Math.max(8, rowWidth - visibleWidth(prefix) - visibleWidth(suffix));
+      const base = `${prefix}${truncateToWidth(nodeDisplayTitle(node), titleWidth)}${suffix}`;
       const focused = this.scrollOffset + offset === this.focusIndex;
       return focused
-        ? `${this.selectTheme.selectedPrefix("› ")}${this.selectTheme.selectedText(truncateToWidth(base, Math.max(10, width - 2)))}`
-        : `  ${truncateToWidth(base, Math.max(10, width - 2))}`;
+        ? `${this.selectTheme.selectedPrefix("› ")}${this.selectTheme.selectedText(truncateToWidth(base, rowWidth))}`
+        : `  ${truncateToWidth(base, rowWidth)}`;
     });
-    while (result.length < height) result.push("");
-    return result;
+    while (result.length < listHeight) result.push("");
+
+    const selected = this.currentNode();
+    const selectedLines = selected
+      ? wrapLimited(
+          this.theme.fg(
+            "muted",
+            `${localize(this.config.language, "当前项", "Selected")}: ${nodeDisplayTitle(selected)}`,
+          ),
+          width,
+          2,
+        )
+      : [""];
+    const output = [...result, "", ...selectedLines];
+    while (output.length < height) output.push("");
+    return output.slice(0, height);
   }
 
   private renderPreview(width: number): string[] {
@@ -374,11 +413,14 @@ export class CuratorOverlay implements Component {
       this.config.language,
     );
     const height = this.bodyHeight() + 3;
-    const lines = compiled.text.split("\n").slice(0, height);
-    if (compiled.text.split("\n").length > height) {
-      lines.push(localize(this.config.language, "… 预览已截断 …", "… preview truncated …"));
-    }
-    return lines.map((line) => truncateToWidth(line, width));
+    const wrapped = compiled.text
+      .split("\n")
+      .flatMap((line) => (line ? wrapTextWithAnsi(line, width) : [""]));
+    if (wrapped.length <= height) return wrapped;
+    return [
+      ...wrapped.slice(0, Math.max(1, height - 1)),
+      localize(this.config.language, "… 预览已截断 …", "… preview truncated …"),
+    ];
   }
 
   private renderInspect(width: number): string[] {
@@ -388,7 +430,7 @@ export class CuratorOverlay implements Component {
     }
     const sourceTokens = nodeSourceTokens(node, this.unitById);
     const lines = [
-      this.theme.bold(node.title),
+      this.theme.bold(nodeDisplayTitle(node)),
       localize(
         this.config.language,
         `当前：${displayMode(this.config.language, node.children?.length ? "split" : node.mode)} · 推荐：${displayMode(this.config.language, node.recommendedMode)} · 风险：${displayRisk(this.config.language, node.risk)} · 来源：${fmtTokens(sourceTokens)}`,
@@ -432,10 +474,24 @@ export class CuratorOverlay implements Component {
       this.config.language,
     );
     const projected = compiled.estimatedTokens + this.snapshot.rawTailTokens;
+    const focusLines = wrapLimited(
+      this.theme.bold(`${localize(this.config.language, "焦点", "Focus")}: ${this.snapshot.focus}`),
+      inner,
+      2,
+    );
+    const instructionLines = this.snapshot.curationInstruction
+      ? wrapLimited(
+          this.theme.fg(
+            "accent",
+            `${localize(this.config.language, "策展指令", "Curation instruction")}: ${this.snapshot.curationInstruction}`,
+          ),
+          inner,
+          2,
+        )
+      : [];
     const header = [
-      this.theme.bold(
-        `${localize(this.config.language, "焦点", "Focus")}: ${truncateToWidth(this.snapshot.focus, Math.max(10, inner - 7))}`,
-      ),
+      ...focusLines,
+      ...instructionLines,
       localize(
         this.config.language,
         `${fmtTokens(this.snapshot.activeTokens)} 当前 → ${fmtTokens(projected)} 预计 · raw tail ${fmtTokens(this.snapshot.rawTailTokens)} · 应用 ${this.applyMode}`,
@@ -467,8 +523,8 @@ export class CuratorOverlay implements Component {
             "muted",
             `${localize(
               this.config.language,
-              "Space 三态 · E 原样 · Enter 拆分 · I 详情 · P checkpoint · S 设置 · H 方式 · A 应用",
-              "Space Cycle · E Exact · Enter Split · I Inspect · P Checkpoint · S Settings · H Mode · A Apply",
+              "Space 三态 · E 原样 · Enter 拆分 · F 指令 · I 详情 · P checkpoint · S 设置 · H 方式 · A 应用",
+              "Space Cycle · E Exact · Enter Split · F Instruction · I Inspect · P Checkpoint · S Settings · H Mode · A Apply",
             )}${
               this.allowNativeFallback
                 ? localize(this.config.language, " · B Pi 原生兜底", " · B Pi fallback")
@@ -494,6 +550,7 @@ export class CuratorOverlay implements Component {
             localize(this.config.language, "I / Esc 返回上下文树", "I / Esc Return to context tree"),
           )
         : status;
-    return wrapInBox([...header, ...body, "", footer], width, (text) => this.theme.fg("border", text), "Context Curator");
+    const footerLines = wrapLimited(footer, inner, 2);
+    return wrapInBox([...header, ...body, "", ...footerLines], width, (text) => this.theme.fg("border", text), "Context Curator");
   }
 }

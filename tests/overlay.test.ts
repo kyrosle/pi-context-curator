@@ -232,4 +232,73 @@ describe("overlay input", () => {
     );
     loader.dispose();
   });
+
+  test("shows short hierarchical labels and opens the curation-instruction input", () => {
+    const source: SourceUnit = {
+      id: "u0001",
+      entryIds: ["e1"],
+      text: "source",
+      tokens: 10,
+      hash: "hash",
+    };
+    const node: CuratorNode = {
+      id: "n1",
+      title: "A very long parent title › Another parent title › Keep C",
+      displayTitle: "Keep C",
+      summary: "summary",
+      sourceUnitIds: [source.id],
+      recommendedMode: "summary",
+      mode: "summary",
+      risk: "medium",
+      rationale: "reason",
+      dependencies: [],
+      verbatimEvidence: [],
+    };
+    const snapshot: CuratorSnapshot = {
+      version: 1,
+      sessionId: "session",
+      leafId: "leaf",
+      createdAt: "2026-08-18T00:00:00.000Z",
+      focus: "next task with a long description that should adapt to the popup width",
+      activeTokens: 100,
+      rawTailTokens: 20,
+      rawTailStartEntryId: "tail",
+      prefixEntryIds: ["e1"],
+      sourceHash: "0123456789abcdef",
+    };
+    let result: import("../src/types").OverlayResult | undefined;
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as unknown as Theme;
+    const overlay = new CuratorOverlay(
+      { terminal: { rows: 40 }, requestRender() {} } as unknown as TUI,
+      theme,
+      snapshot,
+      [node],
+      new Map([[source.id, source]]),
+      { ...DEFAULT_CONFIG, language: "en" },
+      "boundary",
+      false,
+      false,
+      async () => [],
+      (value) => {
+        result = value;
+      },
+    );
+    (overlay as unknown as {
+      selectTheme: { selectedPrefix: (text: string) => string; selectedText: (text: string) => string };
+    }).selectTheme = {
+      selectedPrefix: (text) => text,
+      selectedText: (text) => text,
+    };
+
+    const rendered = overlay.render(58).join("\n");
+    expect(rendered).toContain("Keep C");
+    expect(rendered).not.toContain("A very long parent title");
+    expect(rendered).toContain("F Instruction");
+
+    overlay.handleInput("f");
+    expect(result).toEqual({ type: "instruction", applyMode: "boundary" });
+  });
 });

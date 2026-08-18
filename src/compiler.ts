@@ -22,6 +22,10 @@ export function cloneNodes(nodes: CuratorNode[]): CuratorNode[] {
   }));
 }
 
+export function nodeDisplayTitle(node: CuratorNode): string {
+  return node.displayTitle?.trim() || node.title;
+}
+
 function sourceFor(node: CuratorNode, unitById: Map<string, SourceUnit>): string {
   return node.sourceUnitIds
     .map((id) => unitById.get(id)?.text ?? "")
@@ -33,7 +37,7 @@ function summarySection(node: CuratorNode, language: CuratorLanguage): string {
   const evidence = node.verbatimEvidence.length
     ? `\n\n### ${localize(language, "原样证据", "Exact evidence")}\n${node.verbatimEvidence.map((item) => `- ${item}`).join("\n")}`
     : "";
-  return `## ${node.title}\n\n${node.summary}${evidence}`;
+  return `## ${nodeDisplayTitle(node)}\n\n${node.summary}${evidence}`;
 }
 
 function exactSection(
@@ -42,7 +46,7 @@ function exactSection(
   language: CuratorLanguage,
 ): string {
   const suffix = localize(language, "（原样）", " (verbatim)");
-  return `## ${node.title}${suffix}\n\n<verbatim-context>\n${sourceFor(node, unitById)}\n</verbatim-context>`;
+  return `## ${nodeDisplayTitle(node)}${suffix}\n\n<verbatim-context>\n${sourceFor(node, unitById)}\n</verbatim-context>`;
 }
 
 export function dependencyWarnings(
@@ -51,6 +55,7 @@ export function dependencyWarnings(
 ): string[] {
   const leaves = leafNodes(nodes);
   const keptTitles = new Set(leaves.filter((node) => node.mode !== "drop").map((node) => node.title));
+  const displayTitles = new Map(leaves.map((node) => [node.title, nodeDisplayTitle(node)]));
   const warnings: string[] = [];
   for (const node of leaves) {
     if (node.mode === "drop") continue;
@@ -59,8 +64,8 @@ export function dependencyWarnings(
         warnings.push(
           localize(
             language,
-            `${node.title} 依赖已排除块：${dependency}`,
-            `${node.title} depends on excluded block: ${dependency}`,
+            `${nodeDisplayTitle(node)} 依赖已排除块：${displayTitles.get(dependency) ?? dependency}`,
+            `${nodeDisplayTitle(node)} depends on excluded block: ${displayTitles.get(dependency) ?? dependency}`,
           ),
         );
       }
@@ -86,7 +91,7 @@ export function compileCheckpoint(
       : summarySection(node, language);
     return {
       id: node.id,
-      title: node.title,
+      title: nodeDisplayTitle(node),
       mode,
       text,
       sourceUnitIds: [...node.sourceUnitIds],
@@ -97,7 +102,7 @@ export function compileCheckpoint(
 
   const archivedBlocks = dropped.map((node) => ({
     id: node.id,
-    title: node.title,
+    title: nodeDisplayTitle(node),
     summary: node.summary,
     sourceUnitIds: [...node.sourceUnitIds],
   }));
@@ -125,7 +130,10 @@ export function compileCheckpoint(
     `## 检查点元数据\n\n- 策展时间：${snapshot.createdAt}\n- 来源 session：${snapshot.sessionId}\n- 来源快照：${snapshot.sourceHash.slice(0, 16)}\n- 历史来源仍可从 append-only session 恢复。`,
     `## Checkpoint Metadata\n\n- Curated at: ${snapshot.createdAt}\n- Source session: ${snapshot.sessionId}\n- Source snapshot: ${snapshot.sourceHash.slice(0, 16)}\n- Historical source remains recoverable from the append-only session.`,
   );
-  const text = `# ${localize(language, "交互式上下文检查点", "Interactive Context Checkpoint")}\n\n## ${localize(language, "当前焦点", "Current Focus")}\n\n${snapshot.focus}\n\n${
+  const instruction = snapshot.curationInstruction
+    ? `\n\n## ${localize(language, "策展指令", "Curation Instruction")}\n\n${snapshot.curationInstruction}`
+    : "";
+  const text = `# ${localize(language, "交互式上下文检查点", "Interactive Context Checkpoint")}\n\n## ${localize(language, "当前焦点", "Current Focus")}\n\n${snapshot.focus}${instruction}\n\n${
     sections.length ? sections.join("\n\n") : emptySelection
   }${archive}\n\n${metadata}`;
 
@@ -147,5 +155,5 @@ export function nodeProjectedTokens(node: CuratorNode, unitById: Map<string, Sou
   }
   if (node.mode === "drop") return 0;
   if (node.mode === "exact") return Math.ceil(sourceFor(node, unitById).length / 4);
-  return Math.ceil((node.title.length + node.summary.length + node.verbatimEvidence.join("\n").length) / 4);
+  return Math.ceil((nodeDisplayTitle(node).length + node.summary.length + node.verbatimEvidence.join("\n").length) / 4);
 }

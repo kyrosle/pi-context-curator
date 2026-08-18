@@ -141,4 +141,30 @@ describe("checkpoint compiler", () => {
       "# Interactive Context Checkpoint",
     );
   });
+
+  test("uses short display titles and records the reviewed curation instruction", () => {
+    const curatedSnapshot = {
+      ...snapshot,
+      curationInstruction: "Keep only validation evidence",
+    };
+    const nodes = [
+      node({
+        id: "n1",
+        title: "Very long parent path › Validation",
+        displayTitle: "Validation",
+        sourceUnitIds: ["u0002"],
+      }),
+    ];
+    const compiled = compileCheckpoint(
+      curatedSnapshot,
+      nodes,
+      new Map(units.map((unit) => [unit.id, unit])),
+      false,
+      "en",
+    );
+
+    expect(compiled.text).toContain("## Curation Instruction\n\nKeep only validation evidence");
+    expect(compiled.text).toContain("## Validation");
+    expect(compiled.text).not.toContain("Very long parent path");
+  });
 });

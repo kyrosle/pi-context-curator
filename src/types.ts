@@ -15,6 +15,8 @@ export interface SourceUnit {
 export interface CuratorNode {
   id: string;
   title: string;
+  /** Short local label for display when title contains a fully-qualified hierarchy path. */
+  displayTitle?: string;
   summary: string;
   sourceUnitIds: string[];
   recommendedMode: RetentionMode;
@@ -33,6 +35,7 @@ export interface CuratorSnapshot {
   leafId: string;
   createdAt: string;
   focus: string;
+  curationInstruction?: string;
   activeTokens: number;
   rawTailTokens: number;
   rawTailStartEntryId: string;
@@ -141,6 +144,7 @@ export interface PendingApplication {
 export type OverlayResult =
   | { type: "cancel" }
   | { type: "fallback" }
+  | { type: "instruction"; applyMode: "boundary" | "handoff" }
   | { type: "settings"; applyMode: "boundary" | "handoff" }
   | {
       type: "apply";
