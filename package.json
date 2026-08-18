@@ -1,0 +1,29 @@
+{
+  "name": "pi-context-curator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Interactive, user-controlled context curation for Pi",
+  "homepage": "https://github.com/kyrosle/pi-context-curator",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kyrosle/pi-context-curator.git"
+  },
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "scripts": {
+    "test": "bun test ./tests",
+    "check": "tsc -p ./tsconfig.json && bun build ./index.ts --target=bun --external '@earendil-works/*' --outdir /tmp/pi-context-curator-check"
+  }
+}
