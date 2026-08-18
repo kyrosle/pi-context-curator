@@ -41,7 +41,7 @@ The analyzer proposes structure; it never applies compaction by itself. Final ap
 - A newest raw tail that is always kept verbatim.
 - Deterministic checkpoint compilation after user selection.
 - Manual or automatic Curator triggering.
-- New-input priority: queued RPC, intercom, or other incoming input closes a stale automatic Curator.
+- New-input priority: queued RPC, intercom, or other incoming input closes any stale Curator without consuming the input.
 - Emergency `B` action for explicitly choosing Pi native compaction.
 - Session-scoped settings stored outside model-visible context.
 - Chinese and English UI/checkpoint/analyzer-output selection.
@@ -200,9 +200,35 @@ Appends a normal Pi compaction boundary in the current session. The deterministi
 
 ### `handoff`
 
-Creates a clean child session containing the checkpoint. This is useful when moving to a clearly different phase of work.
+Creates a clean child session containing the checkpoint followed by an exact copy of the retained raw-tail messages. The child references the parent session for provenance, but the parent's older entries are not imported into active context. This is useful when moving to a clearly different phase of work.
 
 Neither mode deletes or rewrites the original append-only history.
+
+## Repeated curation and fallback boundaries
+
+`/curate` reads Pi's compaction-aware `buildContextEntries()`, never the full JSONL transcript. After one Curator checkpoint, a later Curator sees:
+
+| Previous result | What the next Curator sees |
+| --- | --- |
+| `summary` | Only the compiled summary and accepted exact evidence, not the original chat behind it. |
+| `exact` | The selected original source text inside the prior verbatim block. |
+| `drop` | Nothing from that block. Its archive metadata remains non-model-visible unless explicitly restored. |
+| raw tail | The retained recent messages verbatim until they age into a later compactable prefix. |
+| newer work | Messages added after the checkpoint normally. |
+
+The full old history becomes active again only through an explicit branch action such as `/curate undo`; `/curate restore` restores only the selected archived summary. With `archiveIndex: true`, archived titles and source counts—not archived summaries—are intentionally visible.
+
+Fallback behavior is deliberately separated from Curator behavior:
+
+| Situation | Boundary behavior |
+| --- | --- |
+| Manual mode, no Curator open | Pi threshold/overflow compaction proceeds unchanged. |
+| Automatic Curator skipped | Pi native compaction remains the final fallback. |
+| Curator open when new input arrives or another compaction completes | The manual or automatic Curator closes immediately; its stale plan cannot Apply. |
+| Emergency `B` | Runs Pi native compaction without Curator instructions. |
+| Curator Apply races another compaction | Leaf identity and the pending plan ID prevent a stale or unrelated result from being installed. |
+
+A native fallback summarizes the currently active context only, so previously dropped blocks are not reintroduced. It can, however, rewrite a prior `exact` block because native Pi compaction does not understand Curator retention modes. If byte-for-byte retention must survive the next compaction cycle, run Curator again and keep that block `exact` instead of choosing native fallback.
 
 ## Language selection
 

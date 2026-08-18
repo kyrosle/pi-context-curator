@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
+  SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import contextCurator, { applyNativeFallback } from "../index";
+import contextCurator, { applyHandoff, applyNativeFallback } from "../index";
 import { DEFAULT_CONFIG, SESSION_SETTINGS_ENTRY, settingsDraft } from "../src/config";
+import type { PendingApplication } from "../src/types";
 
 describe("extension registration", () => {
   test("registers the curator command and lifecycle hooks", () => {
@@ -178,6 +180,85 @@ describe("extension registration", () => {
     expect(statuses.at(-1)).toBeUndefined();
   });
 
+  test("handoff copies the retained raw tail after the curated checkpoint", async () => {
+    const appended: string[] = [];
+    const timestamp = "2026-08-18T00:00:00.000Z";
+    const rawTailEntries: SessionEntry[] = [
+      {
+        type: "message",
+        id: "tail-user",
+        parentId: null,
+        timestamp,
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "RAW_TAIL_USER" }],
+          timestamp: Date.parse(timestamp),
+        },
+      },
+      {
+        type: "message",
+        id: "tail-assistant",
+        parentId: "tail-user",
+        timestamp,
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "RAW_TAIL_ASSISTANT" }],
+          api: "openai-responses",
+          provider: "test",
+          model: "test",
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 2,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+          stopReason: "stop",
+          timestamp: Date.parse(timestamp),
+        },
+      },
+    ];
+    const pending = {
+      snapshot: { focus: "continue C" },
+      checkpoint: { text: "CURATED_CHECKPOINT" },
+      details: { kind: "pi-context-curator" },
+    } as unknown as PendingApplication;
+    const ctx = {
+      sessionManager: {
+        getSessionFile: () => "/tmp/parent.jsonl",
+      },
+      newSession: async (options: {
+        setup: (manager: unknown) => Promise<void>;
+        withSession: (ctx: unknown) => Promise<void>;
+      }) => {
+        await options.setup({
+          appendSessionInfo(name: string) {
+            appended.push(`info:${name}`);
+          },
+          appendCustomMessageEntry(customType: string, content: string) {
+            appended.push(`custom:${customType}:${content}`);
+          },
+          appendMessage(message: { role: string; content?: Array<{ type: string; text?: string }> }) {
+            const text = message.content?.find((item) => item.type === "text")?.text ?? "";
+            appended.push(`message:${message.role}:${text}`);
+          },
+        });
+        await options.withSession({ ui: { notify() {} } });
+        return { cancelled: false };
+      },
+    } as unknown as ExtensionCommandContext;
+
+    await applyHandoff(ctx, pending, rawTailEntries, "done", "en");
+
+    expect(appended).toEqual([
+      "info:Curated: continue C",
+      "custom:context-curator-handoff:CURATED_CHECKPOINT",
+      "message:user:RAW_TAIL_USER",
+      "message:assistant:RAW_TAIL_ASSISTANT",
+    ]);
+  });
+
   test("new input supersedes an active automatic curator without consuming the input", async () => {
     let command: { handler(args: string, ctx: ExtensionCommandContext): Promise<void> } | undefined;
     let inputHandler:
@@ -238,5 +319,116 @@ describe("extension registration", () => {
 
     expect(inputResult).toEqual({ action: "continue" });
     expect(notices.join("\n")).toContain("new input takes priority");
+  });
+
+  test("native compaction closes an in-flight manual curator before it can apply a stale plan", async () => {
+    let command: { handler(args: string, ctx: ExtensionCommandContext): Promise<void> } | undefined;
+    let compactHandler: ((event: unknown, ctx: ExtensionCommandContext) => void) | undefined;
+    const api = {
+      registerCommand(name: string, value: unknown) {
+        if (name === "curate") command = value as typeof command;
+      },
+      on(name: string, handler: unknown) {
+        if (name === "session_compact") compactHandler = handler as typeof compactHandler;
+      },
+    } as unknown as ExtensionAPI;
+    contextCurator(api);
+
+    let releaseIdle!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      releaseIdle = resolve;
+    });
+    const notices: string[] = [];
+    const ctx = {
+      hasUI: true,
+      mode: "tui",
+      cwd: "/tmp",
+      isProjectTrusted: () => false,
+      waitForIdle: () => waiting,
+      sessionManager: {
+        getSessionId: () => "session-manual-race",
+        getBranch: () => [
+          {
+            type: "custom",
+            id: "settings",
+            parentId: null,
+            timestamp: "2026-08-18T00:00:00.000Z",
+            customType: SESSION_SETTINGS_ENTRY,
+            data: { version: 1, overrides: { language: "en" } },
+          },
+        ],
+      },
+      ui: {
+        setStatus() {},
+        notify(message: string) {
+          notices.push(message);
+        },
+      },
+    } as unknown as ExtensionCommandContext;
+
+    const running = command?.handler("continue C", ctx);
+    await Promise.resolve();
+    compactHandler?.({}, ctx);
+    releaseIdle();
+    await running;
+
+    expect(notices.join("\n")).toContain("another compaction");
+  });
+
+  test("new input also supersedes a manual curator without being consumed", async () => {
+    let command: { handler(args: string, ctx: ExtensionCommandContext): Promise<void> } | undefined;
+    let inputHandler:
+      | ((event: { text: string; source: string }, ctx: ExtensionCommandContext) => unknown)
+      | undefined;
+    const api = {
+      registerCommand(name: string, value: unknown) {
+        if (name === "curate") command = value as typeof command;
+      },
+      on(name: string, handler: unknown) {
+        if (name === "input") inputHandler = handler as typeof inputHandler;
+      },
+    } as unknown as ExtensionAPI;
+    contextCurator(api);
+
+    let releaseIdle!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      releaseIdle = resolve;
+    });
+    const notices: string[] = [];
+    const ctx = {
+      hasUI: true,
+      mode: "tui",
+      cwd: "/tmp",
+      isProjectTrusted: () => false,
+      waitForIdle: () => waiting,
+      sessionManager: {
+        getSessionId: () => "session-manual-input",
+        getBranch: () => [
+          {
+            type: "custom",
+            id: "settings",
+            parentId: null,
+            timestamp: "2026-08-18T00:00:00.000Z",
+            customType: SESSION_SETTINGS_ENTRY,
+            data: { version: 1, overrides: { language: "en" } },
+          },
+        ],
+      },
+      ui: {
+        setStatus() {},
+        notify(message: string) {
+          notices.push(message);
+        },
+      },
+    } as unknown as ExtensionCommandContext;
+
+    const running = command?.handler("continue C", ctx);
+    await Promise.resolve();
+    const inputResult = inputHandler?.({ text: "switch task", source: "rpc" }, ctx);
+    releaseIdle();
+    await running;
+
+    expect(inputResult).toEqual({ action: "continue" });
+    expect(notices.join("\n")).toContain("New input");
   });
 });

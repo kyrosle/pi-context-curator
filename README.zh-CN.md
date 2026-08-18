@@ -41,7 +41,7 @@ flowchart LR
 - 最新 raw tail 始终原样保留。
 - 用户选择完成后，确定性编译 checkpoint，不再让模型二次改写。
 - 支持手动或自动触发 Curator。
-- 新输入优先：排队的 RPC、intercom 或其他输入会关闭已经过时的自动 Curator。
+- 新输入优先：排队的 RPC、intercom 或其他输入会关闭任何已经过时的 Curator，并且不会吞掉该输入。
 - 紧急区提供 `B`，可明确选择 Pi 原生 compaction。
 - Session 级设置存储在模型不可见的 custom entry 中。
 - 支持中英文界面、checkpoint 和分析模型输出语言。
@@ -200,9 +200,35 @@ Curator 是模态窗口：不能直接在窗口内部使用普通 composer 输�
 
 ### `handoff`
 
-创建包含 checkpoint 的干净子 session。适合明确进入一个新工作阶段时使用。
+创建一个干净子 session，先写入 checkpoint，再精确复制保留的 raw-tail 消息。子 session 会引用父 session 作为来源，但不会把父 session 的更早 entry 导入 active context。适合明确进入一个新工作阶段时使用。
 
 两种方式都不会删除或改写原始 append-only 历史。
+
+## 连续策展与兜底边界
+
+`/curate` 读取的是 Pi 经过 compaction 解析后的 `buildContextEntries()`，绝不会直接扫描完整 JSONL transcript。完成一次 Curator checkpoint 后，下一次 Curator 能看到的内容如下：
+
+| 上一次结果 | 下一次 Curator 能看到什么 |
+| --- | --- |
+| `summary` | 只有已经编译的摘要和接受的原样证据，看不到摘要背后的原聊天。 |
+| `exact` | 上次 verbatim block 中明确选择的原始来源文本。 |
+| `drop` | 完全看不到该块；归档 metadata 仍在模型不可见区域，除非用户明确恢复。 |
+| raw tail | 最近保留的消息继续原样存在，直到之后进入新的可压缩前缀。 |
+| 后续工作 | Checkpoint 之后新增的消息正常进入上下文。 |
+
+只有显式执行 `/curate undo` 等分支操作才会让完整旧历史重新成为 active context；`/curate restore` 只恢复用户选中的归档摘要。启用 `archiveIndex: true` 时，会有意暴露归档标题和来源数量，但不会暴露归档摘要。
+
+兜底行为与 Curator 行为明确分离：
+
+| 情况 | 边界行为 |
+| --- | --- |
+| 手动模式且没有打开 Curator | Pi threshold/overflow 原生 compaction 保持不变。 |
+| 跳过自动 Curator | Pi 原生 compaction 继续作为最终兜底。 |
+| Curator 打开期间到达新输入或完成了其他 compaction | 无论手动还是自动 Curator 都会立即关闭，旧方案不能 Apply。 |
+| 紧急区按 `B` | 不附加 Curator 指令，直接运行 Pi 原生 compaction。 |
+| Curator Apply 与其他 compaction 竞态 | Leaf identity 和 pending plan ID 会阻止过期或无关结果写入。 |
+
+原生兜底只会摘要当时的 active context，因此不会重新引入之前已经 `drop` 的块；但它可能改写先前的 `exact` 块，因为 Pi 原生 compaction 不理解 Curator 的保留模式。如果某段内容必须跨下一次压缩继续逐字保留，应再次使用 Curator 并把它设为 `exact`，不要选择原生兜底。
 
 ## 语言切换
 

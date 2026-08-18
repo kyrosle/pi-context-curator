@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import { buildContextEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { buildSourceUnits, expandInitialSourceUnits, refineSourceUnit } from "../src/source";
 import type { SourceUnit } from "../src/types";
 
@@ -18,6 +18,7 @@ describe("checkpoint source ledger", () => {
         version: 1,
         snapshot: {
           focus: "implement the next phase",
+          curationInstruction: "keep only validated work",
           sourceHash: "0123456789abcdef",
         },
         activeBlocks: [
@@ -45,6 +46,7 @@ describe("checkpoint source ledger", () => {
 
     expect(units).toHaveLength(3);
     expect(units[0]?.text).toContain("Previous focus: implement the next phase");
+    expect(units[0]?.text).toContain("Previous curation instruction: keep only validated work");
     expect(units[1]?.text).toContain("Keep this rule.");
     expect(units[2]?.text).toContain("exact output");
     expect(units.map((unit) => unit.id)).toEqual(["u0001", "u0002", "u0003"]);
@@ -66,6 +68,70 @@ describe("checkpoint source ledger", () => {
 
     expect(units).toHaveLength(1);
     expect(units[0]?.text).toContain("legacy summary");
+  });
+
+  test("a later curate sees only the latest checkpoint, kept raw tail, and newer messages", () => {
+    const timestamp = "2026-08-18T00:00:00.000Z";
+    const message = (id: string, parentId: string | null, text: string): SessionEntry => ({
+      type: "message",
+      id,
+      parentId,
+      timestamp,
+      message: {
+        role: "user",
+        content: [{ type: "text", text }],
+        timestamp: Date.parse(timestamp),
+      },
+    });
+    const entries: SessionEntry[] = [
+      message("old-a", null, "OLD_A_SECRET"),
+      message("old-b", "old-a", "OLD_B_SECRET"),
+      message("raw-tail", "old-b", "RAW_TAIL_MUST_SURVIVE"),
+      {
+        type: "compaction",
+        id: "compact-1",
+        parentId: "raw-tail",
+        timestamp,
+        summary: "checkpoint visible text",
+        firstKeptEntryId: "raw-tail",
+        tokensBefore: 100_000,
+        details: {
+          kind: "pi-context-curator",
+          version: 1,
+          snapshot: { focus: "continue C", sourceHash: "0123456789abcdef" },
+          activeBlocks: [
+            {
+              id: "keep-c",
+              title: "C",
+              mode: "summary",
+              text: "ONLY_C_SUMMARY",
+              sourceUnitIds: ["old-c"],
+              estimatedTokens: 10,
+            },
+          ],
+          archivedBlocks: [
+            {
+              id: "drop-a-b",
+              title: "A and B",
+              summary: "ARCHIVED_A_B_SECRET",
+              sourceUnitIds: ["old-a", "old-b"],
+            },
+          ],
+        },
+      } as SessionEntry,
+      message("new-work", "compact-1", "NEW_WORK_AFTER_CURATE"),
+    ];
+
+    const activeEntries = buildContextEntries(entries, "new-work");
+    const text = buildSourceUnits(activeEntries).map((unit) => unit.text).join("\n");
+
+    expect(activeEntries.map((entry) => entry.id)).toEqual(["compact-1", "raw-tail", "new-work"]);
+    expect(text).toContain("ONLY_C_SUMMARY");
+    expect(text).toContain("RAW_TAIL_MUST_SURVIVE");
+    expect(text).toContain("NEW_WORK_AFTER_CURATE");
+    expect(text).not.toContain("OLD_A_SECRET");
+    expect(text).not.toContain("OLD_B_SECRET");
+    expect(text).not.toContain("ARCHIVED_A_B_SECRET");
   });
 });
 

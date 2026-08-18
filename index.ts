@@ -5,6 +5,7 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
   type ExtensionContext,
+  type SessionEntry,
   sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
 import { analyzePartition, type AnalyzerProgress } from "./src/analyzer";
@@ -41,6 +42,10 @@ const STATUS_KEY = "context-curator";
 const AUTO_CURATE_PREFIX = "__context_curator_auto__:";
 const MAX_CURATION_INSTRUCTION_CHARS = 2_000;
 
+interface ActiveCurator {
+  controller: AbortController;
+}
+
 function isInternalAutoCommand(text: string): boolean {
   return text.trim().startsWith(`/curate ${AUTO_CURATE_PREFIX}`);
 }
@@ -70,7 +75,13 @@ function notifyCuratorExit(
     return;
   }
   ctx.ui.notify(
-    localize(language, "Context Curator 已取消。", "Context Curator cancelled."),
+    superseded
+      ? localize(
+          language,
+          "检测到新输入、session 变化或其他 compaction，已关闭过时的 Context Curator。",
+          "New input, a session change, or another compaction closed the stale Context Curator.",
+        )
+      : localize(language, "Context Curator 已取消。", "Context Curator cancelled."),
     "info",
   );
 }
@@ -161,6 +172,7 @@ async function confirmCrossProvider(
   enabled: boolean,
   consentedAnalyzers: Set<string>,
   language: CuratorLanguage,
+  cancelSignal?: AbortSignal,
 ): Promise<boolean> {
   const current = effectiveModelKey(ctx);
   if (!current || current.startsWith(`${analyzerModel.split("/")[0]}/`)) return true;
@@ -173,6 +185,7 @@ async function confirmCrossProvider(
       `当前模型是 ${current}。Context Curator 将把可压缩前缀发送给 ${analyzerModel}；本次 Pi 进程只询问一次。继续？`,
       `The current model is ${current}. Context Curator will send the compactable prefix to ${analyzerModel}; this Pi process asks only once. Continue?`,
     ),
+    cancelSignal ? { signal: cancelSignal } : undefined,
   );
   if (accepted) consentedAnalyzers.add(analyzerModel);
   return accepted;
@@ -547,9 +560,10 @@ export async function applyNativeFallback(
   }
 }
 
-async function applyHandoff(
+export async function applyHandoff(
   ctx: ExtensionCommandContext,
   pending: PendingApplication,
+  rawTailEntries: SessionEntry[],
   successMessage: string,
   language: CuratorLanguage,
 ): Promise<void> {
@@ -569,6 +583,25 @@ async function applyHandoff(
         true,
         pending.details,
       );
+      for (const entry of rawTailEntries) {
+        for (const message of sessionEntryToContextMessages(entry)) {
+          if (message.role === "compactionSummary") {
+            sessionManager.appendCustomMessageEntry(
+              "context-curator-raw-tail-compaction",
+              message.summary,
+              false,
+            );
+          } else if (message.role === "branchSummary") {
+            sessionManager.appendCustomMessageEntry(
+              "context-curator-raw-tail-branch-summary",
+              message.summary,
+              false,
+            );
+          } else {
+            sessionManager.appendMessage(message);
+          }
+        }
+      }
     },
     withSession: async (newCtx) => {
       newCtx.ui.notify(successMessage, "info");
@@ -634,12 +667,19 @@ async function analyzeWithLoading(
       };
       loader.onAbort = () => finish({ type: "cancel" });
       const externalAbort = () => {
+        const replacedByInput = cancelSignal?.reason === "new-input";
         loader.cancel(
-          localize(
-            config.language,
-            "检测到新消息，正在返回聊天…",
-            "New input detected; returning to chat…",
-          ),
+          replacedByInput
+            ? localize(
+                config.language,
+                "检测到新消息，正在返回聊天…",
+                "New input detected; returning to chat…",
+              )
+            : localize(
+                config.language,
+                "Session 已变化或完成了其他 compaction，正在关闭旧分析…",
+                "The session changed or another compaction completed; closing the stale analysis…",
+              ),
         );
       };
       if (cancelSignal) {
@@ -723,20 +763,20 @@ async function runCuratorSession(
   }
   const focus = resolveFocus(args, ctx, config.language);
   if (!focus?.trim()) return;
-  if (
-    !(await confirmCrossProvider(
-      ctx,
-      config.analyzerModel,
-      config.confirmCrossProvider,
-      consentedAnalyzers,
-      config.language,
-    ))
-  ) return;
+  const providerConfirmed = await confirmCrossProvider(
+    ctx,
+    config.analyzerModel,
+    config.confirmCrossProvider,
+    consentedAnalyzers,
+    config.language,
+    cancelSignal,
+  );
 
   if (cancelSignal?.aborted) {
     notifyCuratorExit(ctx, config.language, trigger, true);
     return;
   }
+  if (!providerConfirmed) return;
 
   const prepared = prepareSource(
     ctx,
@@ -762,8 +802,8 @@ async function runCuratorSession(
   let nodes: CuratorNode[] = initialNodes;
   if (
     cancelSignal?.aborted ||
-    (trigger === "auto" &&
-      (ctx.hasPendingMessages() || ctx.sessionManager.getLeafId() !== prepared.snapshot.leafId))
+    ctx.sessionManager.getLeafId() !== prepared.snapshot.leafId ||
+    (trigger === "auto" && ctx.hasPendingMessages())
   ) {
     notifyCuratorExit(ctx, config.language, trigger, true);
     return;
@@ -918,8 +958,8 @@ async function runCuratorSession(
       );
       if (
         cancelSignal?.aborted ||
-        (trigger === "auto" &&
-          (ctx.hasPendingMessages() || ctx.sessionManager.getLeafId() !== prepared.snapshot.leafId))
+        ctx.sessionManager.getLeafId() !== prepared.snapshot.leafId ||
+        (trigger === "auto" && ctx.hasPendingMessages())
       ) {
         notifyCuratorExit(ctx, config.language, trigger, true);
         return;
@@ -964,8 +1004,8 @@ async function runCuratorSession(
       }
       if (
         cancelSignal?.aborted ||
-        (trigger === "auto" &&
-          (ctx.hasPendingMessages() || ctx.sessionManager.getLeafId() !== prepared.snapshot.leafId))
+        ctx.sessionManager.getLeafId() !== prepared.snapshot.leafId ||
+        (trigger === "auto" && ctx.hasPendingMessages())
       ) {
         notifyCuratorExit(ctx, config.language, trigger, true);
         return;
@@ -1063,7 +1103,13 @@ async function runCuratorSession(
 
   try {
     if (result.applyMode === "handoff") {
-      await applyHandoff(ctx, pending, successMessage, config.language);
+      await applyHandoff(
+        ctx,
+        pending,
+        prepared.rawTailEntries,
+        successMessage,
+        config.language,
+      );
     } else {
       await applyBoundary(ctx, pendingBySession, pending);
       ctx.ui.notify(successMessage, "info");
@@ -1079,25 +1125,27 @@ async function runCurator(
   ctx: ExtensionCommandContext,
   pendingBySession: Map<string, PendingApplication>,
   consentedAnalyzers: Set<string>,
-  activeAutoCurators: Map<string, AbortController>,
+  activeCurators: Map<string, ActiveCurator>,
   trigger: CuratorTrigger,
 ): Promise<void> {
-  if (trigger === "manual") {
-    await runCuratorSession(
-      pi,
-      args,
-      ctx,
-      pendingBySession,
-      consentedAnalyzers,
-      trigger,
-    );
+  const sessionId = ctx.sessionManager.getSessionId();
+  if (activeCurators.has(sessionId)) {
+    if (trigger === "manual") {
+      ctx.ui.notify(
+        localize(
+          effectiveConfig(ctx).config.language,
+          "当前 session 已有一个 Curator 正在运行。",
+          "A Curator is already running for this session.",
+        ),
+        "warning",
+      );
+    }
     return;
   }
-
-  const sessionId = ctx.sessionManager.getSessionId();
-  if (activeAutoCurators.has(sessionId) || !ctx.isIdle() || ctx.hasPendingMessages()) return;
+  if (trigger === "auto" && (!ctx.isIdle() || ctx.hasPendingMessages())) return;
   const controller = new AbortController();
-  activeAutoCurators.set(sessionId, controller);
+  const active: ActiveCurator = { controller };
+  activeCurators.set(sessionId, active);
   try {
     await runCuratorSession(
       pi,
@@ -1109,7 +1157,7 @@ async function runCurator(
       controller.signal,
     );
   } finally {
-    if (activeAutoCurators.get(sessionId) === controller) activeAutoCurators.delete(sessionId);
+    if (activeCurators.get(sessionId) === active) activeCurators.delete(sessionId);
   }
 }
 
@@ -1117,7 +1165,7 @@ export default function contextCurator(pi: ExtensionAPI): void {
   const pendingBySession = new Map<string, PendingApplication>();
   const reminderLevel = new Map<string, number>();
   const autoGate = new AutoCuratorGate();
-  const activeAutoCurators = new Map<string, AbortController>();
+  const activeCurators = new Map<string, ActiveCurator>();
   const consentedAnalyzers = new Set<string>();
 
   pi.registerCommand("curate", {
@@ -1133,7 +1181,7 @@ export default function contextCurator(pi: ExtensionAPI): void {
           ctx,
           pendingBySession,
           consentedAnalyzers,
-          activeAutoCurators,
+          activeCurators,
           "auto",
         );
       }
@@ -1151,7 +1199,7 @@ export default function contextCurator(pi: ExtensionAPI): void {
         ctx,
         pendingBySession,
         consentedAnalyzers,
-        activeAutoCurators,
+        activeCurators,
         "manual",
       );
     },
@@ -1160,9 +1208,9 @@ export default function contextCurator(pi: ExtensionAPI): void {
   pi.on("input", (event, ctx) => {
     if (isInternalAutoCommand(event.text)) return undefined;
     const sessionId = ctx.sessionManager.getSessionId();
-    const controller = activeAutoCurators.get(sessionId);
-    if (!controller || controller.signal.aborted) return undefined;
-    controller.abort("new-input");
+    const active = activeCurators.get(sessionId);
+    if (!active || active.controller.signal.aborted) return undefined;
+    active.controller.abort("new-input");
     ctx.ui.setStatus(
       STATUS_KEY,
       localize(
@@ -1195,8 +1243,8 @@ export default function contextCurator(pi: ExtensionAPI): void {
 
   pi.on("session_compact", (_event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
-    activeAutoCurators.get(sessionId)?.abort("session-compacted");
-    activeAutoCurators.delete(sessionId);
+    activeCurators.get(sessionId)?.controller.abort("session-compacted");
+    activeCurators.delete(sessionId);
     pendingBySession.delete(sessionId);
     reminderLevel.set(sessionId, 0);
     autoGate.reset(sessionId);
@@ -1300,8 +1348,8 @@ export default function contextCurator(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", (_event, ctx) => {
-    for (const controller of activeAutoCurators.values()) controller.abort("session-started");
-    activeAutoCurators.clear();
+    for (const active of activeCurators.values()) active.controller.abort("session-started");
+    activeCurators.clear();
     pendingBySession.clear();
     reminderLevel.clear();
     autoGate.clear();

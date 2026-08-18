@@ -32,6 +32,7 @@ function sha256(text: string): string {
 
 interface VirtualCheckpoint {
   focus: string;
+  curationInstruction?: string;
   sourceHash: string;
   blocks: CompiledActiveBlock[];
 }
@@ -59,6 +60,10 @@ function virtualCheckpoint(entry: SessionEntry): VirtualCheckpoint | undefined {
   if (blocks.length === 0) return undefined;
   return {
     focus: typeof details.snapshot?.focus === "string" ? details.snapshot.focus : "",
+    curationInstruction:
+      typeof details.snapshot?.curationInstruction === "string"
+        ? details.snapshot.curationInstruction
+        : undefined,
     sourceHash: typeof details.snapshot?.sourceHash === "string" ? details.snapshot.sourceHash : "unknown",
     blocks,
   };
@@ -106,6 +111,9 @@ export function buildSourceUnits(entries: SessionEntry[]): SourceUnit[] {
       const metadata = [
         "<prior-curator-checkpoint>",
         checkpoint.focus ? `Previous focus: ${checkpoint.focus}` : "Previous focus: unavailable",
+        ...(checkpoint.curationInstruction
+          ? [`Previous curation instruction: ${checkpoint.curationInstruction}`]
+          : []),
         `Source snapshot: ${checkpoint.sourceHash.slice(0, 16)}`,
         "</prior-curator-checkpoint>",
       ].join("\n");
