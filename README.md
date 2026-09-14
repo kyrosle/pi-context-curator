@@ -48,6 +48,7 @@ The analyzer proposes structure; it never applies compaction by itself. Final ap
 - Analyzer model and thinking level selected from Pi's existing ModelRegistry.
 - Bounded concurrent first-pass analysis for very large histories.
 - Coverage, snapshot, dependency, and stale-session guards.
+- Read-only current-branch History with recovery from any listed archived summary and safe pre-curation forks.
 - Recoverable archived block summaries and pre-curation undo.
 
 ## Requirements
@@ -102,8 +103,9 @@ With no explicit focus argument, `/curate` uses the newest user request as the n
 | `/curate [focus]` | Analyze the compactable prefix and open the interactive tree. |
 | `/curate settings` | Open session-scoped Curator settings. |
 | `/curate status` | Show effective configuration and current context usage. |
+| `/curate history` | Browse every Curator checkpoint on the current branch without adding it to model context. |
 | `/curate undo` | Move the branch pointer to before the latest Curator checkpoint. No history is deleted. |
-| `/curate restore` | Restore the summary of one archived block into active context. |
+| `/curate restore` | Restore one archived summary from the latest Curator checkpoint. |
 
 ## Curator keys
 
@@ -145,6 +147,26 @@ Important boundaries:
 
 The accepted instruction is recorded in the checkpoint so the next model can understand why the context was narrowed.
 
+## History and explicit recovery
+
+`/curate history` opens a read-only popup over every Curator checkpoint on the current Pi branch. See the [History specification](docs/history.md) for the complete invariants and compatibility boundary.
+
+The list shows the curation time, focus, estimated token change, and `summary` / `exact` / `drop` counts. `Enter` opens the persisted decision tree. Long focus, instruction, and summary text is wrapped and clipped to the available terminal size.
+
+History actions are deliberately explicit:
+
+| Key | Action |
+| --- | --- |
+| `Enter` / `Right` | Inspect the selected checkpoint and its decision tree. |
+| `R` | Restore the selected dropped block, or choose one of that checkpoint's archived blocks. Only its summary is restored. |
+| `F` | Confirm, then create and switch to a new Pi session forked from immediately before that curation. |
+| `Left` / `Esc` | Return from details to the history list. |
+| `Q` | Close History from either view. |
+
+Browsing History performs no model call and never adds metadata or dropped content to active context. Restoring adds only the explicitly selected archived summary and records the source checkpoint ID. Forking does not delete or move the original session.
+
+The first version is intentionally current-branch only. A `handoff` starts a child session with its own branch, so parent-session history is not silently traversed. Exact per-block transcript restoration and cross-session indexing require a future provenance schema; use `F` or `/curate undo` when the complete pre-curation history is required.
+
 ## Automatic mode and chat priority
 
 `triggerMode` controls whether the Curator is opened manually or automatically.
@@ -153,7 +175,7 @@ The accepted instruction is recorded in the checkpoint so the next model can und
 
 - Curator runs only when you invoke `/curate`.
 - Thresholds provide status or warning messages.
-- Pi native threshold compaction remains untouched as the final fallback.
+- Pi native threshold/overflow compaction uses the effective Curator analyzer model and thinking level (including session overrides), while retaining Pi's native summarization and cut-point behavior.
 
 ### `auto`
 
@@ -205,6 +227,12 @@ Creates a clean child session containing the checkpoint followed by an exact cop
 Neither mode deletes or rewrites the original append-only history.
 
 ## Repeated curation and fallback boundaries
+
+Automatic `threshold` and `overflow` compactions call Pi's exported `compact()` with the model/thinking selected in `/curate settings`. This applies in both manual and automatic Curator popup modes. No interactive tree is generated for these native compactions. Pi still owns preparation, recent-message retention, previous-summary updates, split-turn summaries, and overflow retry. Selecting a Curator analyzer also authorizes its use for these automatic requests, including cross-provider requests without a popup.
+
+If the selected model is unavailable, authentication fails, or summarization fails, a warning is shown and Pi falls back to the conversation model. Cancellation stops compaction. Disabling Curator disables this routing. Manual `/compact`, emergency `B`, and other extensions' explicitly marked requests keep their existing behavior; Curator Apply still writes the reviewed checkpoint without re-summarizing it. `/curate status` shows the automatic route. Native results do not appear as interactive checkpoints in `/curate history`.
+
+This integration follows the approach demonstrated by [pi-compaction-model](https://github.com/JMHSV/pi-compaction-model), using Pi's own algorithm directly rather than installing a second handler with separate model settings. Do not enable another automatic compaction handler for the same reasons (including pi-vcc's `overrideDefaultCompaction`): Pi can let a later handler replace the result.
 
 `/curate` reads Pi's compaction-aware `buildContextEntries()`, never the full JSONL transcript. After one Curator checkpoint, a later Curator sees:
 

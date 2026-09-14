@@ -133,7 +133,7 @@ describe("extension registration", () => {
     expect(sent).toHaveLength(2);
   });
 
-  test("manual mode leaves Pi native threshold compaction untouched", () => {
+  test("manual /compact leaves Pi's conversation-model path untouched", () => {
     let beforeCompact: ((event: unknown, ctx: ExtensionCommandContext) => unknown) | undefined;
     const api = {
       registerCommand() {},
@@ -144,7 +144,7 @@ describe("extension registration", () => {
     contextCurator(api);
 
     const result = beforeCompact?.(
-      { reason: "threshold", customInstructions: undefined },
+      { reason: "manual", customInstructions: undefined },
       {
         sessionManager: {
           getSessionId: () => "manual-session",

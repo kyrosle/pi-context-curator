@@ -70,6 +70,21 @@ export interface CuratorPlanDetails {
   }>;
 }
 
+/** One persisted Curator checkpoint on the active Pi session branch. */
+export interface CuratorHistoryRecord {
+  entryId: string;
+  parentId: string | null;
+  timestamp: string;
+  tokensBefore: number;
+  projectedTokens: number;
+  details: CuratorPlanDetails;
+}
+
+export type HistoryOverlayResult =
+  | { type: "cancel" }
+  | { type: "restore"; checkpointEntryId: string; blockId?: string }
+  | { type: "fork"; checkpointEntryId: string };
+
 export interface CompiledActiveBlock {
   id: string;
   title: string;

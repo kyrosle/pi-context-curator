@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { analyzePartition, type AnalyzerProgress } from "./src/analyzer";
 import { AutoCuratorGate } from "./src/auto";
+import { compactAutomatically } from "./src/native-compaction";
 import { compileCheckpoint, leafNodes } from "./src/compiler";
 import {
   applyConfigOverrides,
@@ -20,12 +21,15 @@ import {
 } from "./src/config";
 import { CuratorLoadingOverlay } from "./src/loading";
 import { CuratorOverlay } from "./src/overlay";
+import { CuratorHistoryOverlay } from "./src/history-overlay";
+import { collectCuratorHistory, findHistoryRecord } from "./src/history";
 import { CuratorSettingsOverlay } from "./src/settings";
 import { localize } from "./src/i18n";
 import { prepareSource, refineSourceUnit } from "./src/source";
 import { validateCoverage } from "./src/validation";
 import type {
   CuratorNode,
+  CuratorHistoryRecord,
   CuratorLanguage,
   CuratorTrigger,
   CuratorPlanDetails,
@@ -34,6 +38,7 @@ import type {
   CompiledCheckpoint,
   PendingApplication,
   OverlayResult,
+  HistoryOverlayResult,
   SettingsOverlayResult,
   SourceUnit,
 } from "./src/types";
@@ -381,18 +386,6 @@ function buildDetails(
   };
 }
 
-function latestCuratorDetails(ctx: ExtensionCommandContext): CuratorPlanDetails | undefined {
-  const branch = ctx.sessionManager.getBranch();
-  for (let index = branch.length - 1; index >= 0; index--) {
-    const entry = branch[index] as { details?: unknown };
-    const details = entry.details as Partial<CuratorPlanDetails> | undefined;
-    if (details?.kind === "pi-context-curator" && details.version === 1) {
-      return details as CuratorPlanDetails;
-    }
-  }
-  return undefined;
-}
-
 async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
   const resolved = effectiveConfig(ctx);
   const config = resolved.config;
@@ -411,7 +404,7 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
         `Checkpoint 目标：${config.targetCheckpointTokens} tokens`,
         `分块宽度：2–${config.maxBlocksPerSplit}`,
         `用量：${usage?.tokens ?? "?"}/${usage?.contextWindow ?? "?"} (${usage?.percent?.toFixed(1) ?? "?"}%)`,
-        "常规压缩：手动、交互式",
+        `自动阈值/溢出压缩：Pi 原生机制 + ${config.enabled ? config.analyzerModel : "主聊天模型"}`,
         "紧急压缩：Pi 原生兜底",
       ]
     : [
@@ -427,7 +420,7 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
         `checkpoint target: ${config.targetCheckpointTokens} tokens`,
         `split width: 2–${config.maxBlocksPerSplit}`,
         `usage: ${usage?.tokens ?? "?"}/${usage?.contextWindow ?? "?"} (${usage?.percent?.toFixed(1) ?? "?"}%)`,
-        "normal compaction: manual and interactive",
+        `automatic threshold/overflow: Pi native algorithm + ${config.enabled ? config.analyzerModel : "conversation model"}`,
         "emergency compaction: Pi built-in fallback",
       ];
   ctx.ui.notify(lines.join("\n"), "info");
@@ -475,24 +468,69 @@ async function undoLatest(ctx: ExtensionCommandContext): Promise<void> {
   await ctx.navigateTree(compaction.parentId);
 }
 
-async function restoreArchived(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+async function restoreArchivedFromRecord(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  record: CuratorHistoryRecord,
+  requestedBlockId?: string,
+): Promise<void> {
   const language = effectiveConfig(ctx).config.language;
-  const details = latestCuratorDetails(ctx);
-  if (!details || details.archivedBlocks.length === 0) {
+  const blocks = record.details.archivedBlocks;
+  if (blocks.length === 0) {
     ctx.ui.notify(
-      localize(language, "当前分支没有可恢复的归档块。", "The current branch has no archived block to restore."),
+      localize(
+        language,
+        "所选 checkpoint 没有可恢复的归档块。",
+        "The selected checkpoint has no archived block to restore.",
+      ),
       "warning",
     );
     return;
   }
-  const labels = details.archivedBlocks.map((block) => block.title);
-  const selected = await ctx.ui.select(
-    localize(language, "恢复哪个归档块？", "Which archived block should be restored?"),
-    labels,
-  );
-  if (!selected) return;
-  const block = details.archivedBlocks.find((candidate) => candidate.title === selected);
+  let block = requestedBlockId
+    ? blocks.find((candidate) => candidate.id === requestedBlockId)
+    : undefined;
+  if (requestedBlockId && !block) {
+    ctx.ui.notify(
+      localize(
+        language,
+        "所选归档块已不存在，可能是 session 分支已经变化。",
+        "The selected archived block no longer exists; the session branch may have changed.",
+      ),
+      "error",
+    );
+    return;
+  }
+  if (!block) {
+    const choices = blocks.map((candidate, index) =>
+      `${index + 1}. ${candidate.title} [${candidate.id}]`
+    );
+    const selected = await ctx.ui.select(
+      localize(language, "恢复哪个归档块的摘要？", "Which archived block summary should be restored?"),
+      choices,
+    );
+    if (!selected) return;
+    block = blocks[choices.indexOf(selected)];
+  }
   if (!block) return;
+  const selectedBlockId = block.id;
+  const liveRecord = findHistoryRecord(
+    collectCuratorHistory(ctx.sessionManager.getBranch()),
+    record.entryId,
+  );
+  const liveBlock = liveRecord?.details.archivedBlocks.find((candidate) => candidate.id === selectedBlockId);
+  if (!liveRecord || !liveBlock) {
+    ctx.ui.notify(
+      localize(
+        language,
+        "选择归档块期间 session 分支已变化；没有恢复任何内容。",
+        "The session branch changed while selecting the archived block; no content was restored.",
+      ),
+      "warning",
+    );
+    return;
+  }
+  block = liveBlock;
   pi.sendMessage(
     {
       customType: "context-curator-restore",
@@ -502,18 +540,129 @@ async function restoreArchived(pi: ExtensionAPI, ctx: ExtensionCommandContext): 
         `## Restored Archived Context: ${block.title}\n\n${block.summary}\n\nSource units: ${block.sourceUnitIds.join(", ")}`,
       ),
       display: true,
-      details: { kind: "pi-context-curator-restore", block },
+      details: {
+        kind: "pi-context-curator-restore",
+        version: 1,
+        checkpointEntryId: liveRecord.entryId,
+        checkpointCreatedAt: liveRecord.details.snapshot.createdAt,
+        block,
+      },
     },
     { triggerTurn: false },
   );
   ctx.ui.notify(
     localize(
       language,
-      `已将“${block.title}”的归档摘要恢复到 active context。`,
-      `Restored the archived summary “${block.title}” to active context.`,
+      `已显式恢复“${block.title}”的归档摘要；原始聊天没有被恢复。`,
+      `Explicitly restored the archived summary “${block.title}”; the original transcript was not restored.`,
     ),
     "info",
   );
+}
+
+async function restoreArchived(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+  const language = effectiveConfig(ctx).config.language;
+  const record = collectCuratorHistory(ctx.sessionManager.getBranch())[0];
+  if (!record) {
+    ctx.ui.notify(
+      localize(language, "当前分支没有 Context Curator checkpoint。", "The current branch has no Context Curator checkpoint."),
+      "warning",
+    );
+    return;
+  }
+  await restoreArchivedFromRecord(pi, ctx, record);
+}
+
+async function forkBeforeHistoryRecord(
+  ctx: ExtensionCommandContext,
+  record: CuratorHistoryRecord,
+): Promise<void> {
+  const language = effectiveConfig(ctx).config.language;
+  if (!record.parentId) {
+    ctx.ui.notify(
+      localize(
+        language,
+        "所选 checkpoint 没有可 fork 的压缩前父节点。",
+        "The selected checkpoint has no pre-curation parent to fork from.",
+      ),
+      "error",
+    );
+    return;
+  }
+  const branch = ctx.sessionManager.getBranch();
+  const checkpointIndex = branch.findIndex((entry) => entry.id === record.entryId);
+  const newerEntries = checkpointIndex >= 0 ? branch.length - checkpointIndex - 1 : 0;
+  const confirmed = await ctx.ui.confirm(
+    localize(language, "从策展前创建新 session", "Fork a new session before curation"),
+    localize(
+      language,
+      `将从 ${record.details.snapshot.createdAt} 的 checkpoint 之前创建并切换到新 session。当前 session 与其后 ${newerEntries} 条 entry 都不会被删除。继续？`,
+      `Create and switch to a new session from before the ${record.details.snapshot.createdAt} checkpoint. The current session and its ${newerEntries} newer entries will not be deleted. Continue?`,
+    ),
+  );
+  if (!confirmed) return;
+  await ctx.fork(record.parentId, {
+    position: "at",
+    withSession: async (newCtx) => {
+      newCtx.ui.notify(
+        localize(
+          language,
+          "已从所选 Curator checkpoint 之前创建新 session。",
+          "Created a new session from before the selected Curator checkpoint.",
+        ),
+        "info",
+      );
+    },
+  });
+}
+
+async function showHistory(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+  const language = effectiveConfig(ctx).config.language;
+  const records = collectCuratorHistory(ctx.sessionManager.getBranch());
+  if (records.length === 0) {
+    ctx.ui.notify(
+      localize(language, "当前分支还没有 Curator history。", "The current branch has no Curator history yet."),
+      "info",
+    );
+    return;
+  }
+  if (ctx.mode !== "tui") {
+    ctx.ui.notify(
+      localize(
+        language,
+        "Curator History popup 当前只支持 Pi TUI；该命令没有修改上下文。",
+        "The Curator History popup currently requires Pi TUI; no context was changed.",
+      ),
+      "warning",
+    );
+    return;
+  }
+  const result = await ctx.ui.custom<HistoryOverlayResult>((tui, theme, _keybindings, done) =>
+    new CuratorHistoryOverlay(tui, theme, records, language, done), {
+    overlay: true,
+    overlayOptions: { width: "92%", maxHeight: "94%", anchor: "center" },
+  });
+  if (!result || result.type === "cancel") return;
+  const record = findHistoryRecord(
+    collectCuratorHistory(ctx.sessionManager.getBranch()),
+    result.checkpointEntryId,
+  );
+  if (!record) {
+    ctx.ui.notify(
+      localize(
+        language,
+        "History 打开期间 session 分支已变化；没有执行恢复操作。",
+        "The session branch changed while History was open; no recovery action was performed.",
+      ),
+      "warning",
+    );
+    return;
+  }
+  if (result.type === "restore") {
+    await restoreArchivedFromRecord(pi, ctx, record, result.blockId);
+    return;
+  }
+  await forkBeforeHistoryRecord(ctx, record);
 }
 
 async function applyBoundary(
@@ -1169,7 +1318,7 @@ export default function contextCurator(pi: ExtensionAPI): void {
   const consentedAnalyzers = new Set<string>();
 
   pi.registerCommand("curate", {
-    description: "Interactively curate context: /curate [focus] | settings | status | undo | restore",
+    description: "Interactively curate context: /curate [focus] | settings | status | history | undo | restore",
     handler: async (args, ctx) => {
       const trimmed = args.trim();
       if (trimmed.startsWith(AUTO_CURATE_PREFIX)) {
@@ -1191,6 +1340,7 @@ export default function contextCurator(pi: ExtensionAPI): void {
         return;
       }
       if (command === "status") return showStatus(ctx);
+      if (command === "history") return showHistory(pi, ctx);
       if (command === "undo") return undoLatest(ctx);
       if (command === "restore") return restoreArchived(pi, ctx);
       return runCurator(
@@ -1225,7 +1375,10 @@ export default function contextCurator(pi: ExtensionAPI): void {
   pi.on("session_before_compact", (event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     const pending = pendingBySession.get(sessionId);
-    if (!pending) return undefined;
+    if (!pending) {
+      if (!["threshold", "overflow"].includes(event.reason) || event.customInstructions) return undefined;
+      return compactAutomatically(event, ctx, effectiveConfig(ctx).config);
+    }
     if (ctx.sessionManager.getLeafId() !== pending.snapshot.leafId) {
       pendingBySession.delete(sessionId);
       return { cancel: true };

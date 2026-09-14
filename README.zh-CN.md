@@ -48,6 +48,7 @@ flowchart LR
 - 直接从 Pi ModelRegistry 选择分析模型和 thinking level。
 - 大上下文支持受控并发的分层分析。
 - 包含来源覆盖、快照、依赖和 session 过期校验。
+- 提供当前分支的只读 History，可以恢复任意列表 checkpoint 的归档摘要，并安全 fork 到策展前。
 - 支持恢复归档摘要和回到策展前节点。
 
 ## 环境要求
@@ -102,8 +103,9 @@ pi -e /absolute/path/to/pi-context-curator/index.ts
 | `/curate [focus]` | 分析可压缩前缀并打开交互树。 |
 | `/curate settings` | 打开当前 session 的覆盖设置。 |
 | `/curate status` | 显示有效配置和当前上下文用量。 |
+| `/curate history` | 浏览当前分支上的全部 Curator checkpoint，查看内容不会进入模型上下文。 |
 | `/curate undo` | 把分支指针移动到最近一次 Curator checkpoint 之前，不删除历史。 |
-| `/curate restore` | 把某个归档块的摘要恢复到 active context。 |
+| `/curate restore` | 从最近一次 Curator checkpoint 恢复一个归档摘要。 |
 
 ## Curator 按键
 
@@ -145,6 +147,26 @@ pi -e /absolute/path/to/pi-context-curator/index.ts
 
 最终接受的策展指令会写入 checkpoint，让后续模型知道上下文为什么被收窄。
 
+## History 与显式恢复
+
+`/curate history` 会打开只读 popup，列出当前 Pi 分支上的全部 Curator checkpoint。完整的不变量与兼容性边界见 [History 规格](docs/history.zh-CN.md)。
+
+列表会显示策展时间、focus、预计 token 变化，以及 `summary` / `exact` / `drop` 数量。按 `Enter` 可以查看当时持久化的决策树；较长的 focus、指令和摘要会根据终端大小自动换行并截断。
+
+History 中的恢复操作全部要求显式触发：
+
+| 按键 | 操作 |
+| --- | --- |
+| `Enter` / `Right` | 查看所选 checkpoint 及其决策树。 |
+| `R` | 恢复当前选中的 drop 块，或者从该 checkpoint 的归档块中选择一个；只恢复摘要。 |
+| `F` | 确认后，从这次策展之前创建并切换到新的 Pi session。 |
+| `Left` / `Esc` | 从详情返回 History 列表。 |
+| `Q` | 从任意页面关闭 History。 |
+
+浏览 History 不会调用模型，也不会把 metadata 或被 drop 的内容放回 active context。Restore 只会加入用户明确选择的归档摘要，并记录来源 checkpoint ID。Fork 不会删除或移动原 session。
+
+第一版有意限制在当前分支。`handoff` 会创建具有独立分支的子 session，因此 History 不会静默跨到父 session。精确恢复某个块的完整原聊天、跨 session 建立索引都需要后续 provenance schema；如果需要完整的压缩前历史，请使用 `F` 或 `/curate undo`。
+
 ## 自动模式与聊天优先级
 
 `triggerMode` 决定 Curator 由用户手动调用还是根据压力自动打开。
@@ -153,7 +175,7 @@ pi -e /absolute/path/to/pi-context-curator/index.ts
 
 - 只有用户执行 `/curate` 才会运行 Curator。
 - 阈值只显示状态或提醒。
-- Pi 原生阈值压缩保持不变，继续作为最终兜底。
+- Pi 原生阈值/溢出压缩使用 Curator 当前生效的分析模型和 thinking（含 session 覆盖），保留 Pi 的原生摘要与切分机制。
 
 ### `auto`
 
@@ -205,6 +227,12 @@ Curator 是模态窗口：不能直接在窗口内部使用普通 composer 输�
 两种方式都不会删除或改写原始 append-only 历史。
 
 ## 连续策展与兜底边界
+
+会话自动触发的 `threshold` 和 `overflow` 压缩会调用 Pi 导出的 `compact()`，模型和 thinking 实时取自 `/curate settings`。Curator 弹窗设为手动或自动时均生效。这条路径不生成交互树：来源准备、近期原文保留、旧摘要更新、跨轮次摘要和溢出重试仍由 Pi 负责。选择 Curator 分析模型也表示授权将自动压缩内容发送给该模型，跨 provider 时不会另弹确认窗。
+
+模型不可用、认证或摘要调用失败时会警告，并退回主聊天模型；取消则停止压缩。禁用 Curator 时停止模型路由。手动 `/compact`、紧急 `B`、其他扩展带专用标记的请求保留原行为；Curator Apply 仍直接写入已审阅的 checkpoint，不再交给模型重写。`/curate status` 可查看自动压缩路由，原生结果不会作为交互 checkpoint 出现在 `/curate history`。
+
+接法参考 [pi-compaction-model](https://github.com/JMHSV/pi-compaction-model)：直接调用 Pi 原生算法，集成在 Curator 内共享模型设置。不要同时启用其他接管相同自动压缩事件的插件（包括 pi-vcc 的 `overrideDefaultCompaction`），否则 Pi 后执行的 handler 可能覆盖前面的结果。
 
 `/curate` 读取的是 Pi 经过 compaction 解析后的 `buildContextEntries()`，绝不会直接扫描完整 JSONL transcript。完成一次 Curator checkpoint 后，下一次 Curator 能看到的内容如下：
 

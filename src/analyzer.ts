@@ -264,7 +264,6 @@ async function analyzeDirect(
       : basePrompt;
     const options: ProviderStreamOptions = {
       maxTokens: Math.min(8_000, resolved.model.maxTokens),
-      temperature: 0,
       signal,
     };
     if (

@@ -87,6 +87,7 @@ describe("analyzer dispatch", () => {
     expect(nodes.flatMap((node) => node.sourceUnitIds)).toEqual(["u0001", "u0002"]);
     expect(capturedOptions?.reasoningEffort).toBe("low");
     expect(capturedOptions?.maxTokens).toBe(8_000);
+    expect(capturedOptions).not.toHaveProperty("temperature");
     expect(capturedContext?.systemPrompt).toContain("in English");
     expect(capturedContext?.systemPrompt).toContain("recommend drop for unrelated blocks");
     expect(capturedContext?.messages[0]?.content[0]?.text).toContain("Output language: English");
