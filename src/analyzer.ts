@@ -102,9 +102,17 @@ async function resolveAnalyzer(
       ),
     );
   }
+  const sessionId = ctx.sessionManager.getSessionId();
+  const sessionHeaders = model.provider === "opencode-go"
+    ? { "x-opencode-session": sessionId, "x-opencode-client": "pi" }
+    : undefined;
   return {
     model,
-    complete: (context, options) => ctx.modelRegistry.complete(model, context, options),
+    complete: (context, options) => ctx.modelRegistry.complete(model, context, {
+      ...options,
+      sessionId,
+      ...(sessionHeaders ? { headers: { ...options.headers, ...sessionHeaders } } : {}),
+    }),
   };
 }
 

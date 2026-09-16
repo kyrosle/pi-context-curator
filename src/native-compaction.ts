@@ -38,11 +38,15 @@ export async function compactAutomatically(
     const headers = auth.headers ? Object.fromEntries(
       Object.entries(auth.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
     ) : undefined;
+    const sessionId = ctx.sessionManager.getSessionId();
+    const requestHeaders = model.provider === "opencode-go"
+      ? { ...headers, "x-opencode-session": sessionId, "x-opencode-client": "pi" }
+      : headers;
     const result = await summarize(
-      { ...event.preparation, fileOps }, model, auth.apiKey, headers,
+      { ...event.preparation, fileOps }, model, auth.apiKey, requestHeaders,
       event.customInstructions, event.signal, clampThinkingLevel(model, config.thinkingLevel),
       provider ? (selected, context, options) => provider.streamSimple(selected, context, options) : undefined,
-      auth.env,
+      auth.env, undefined, undefined, sessionId,
     );
     if (event.signal.aborted) return { cancel: true };
     return { compaction: { ...result, details: {

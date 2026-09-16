@@ -11,10 +11,10 @@ describe("analyzer dispatch", () => {
       { id: "u0002", entryIds: ["e2"], text: "validation", tokens: 10, hash: "b" },
     ];
     const model = {
-      id: "deepseek-v4-flash",
-      name: "DeepSeek V4 Flash",
+      id: "deepseek-v4.1-flash",
+      name: "DeepSeek V4.1 Flash",
       api: "openai-completions",
-      provider: "deepseek",
+      provider: "opencode-go",
       reasoning: true,
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -24,6 +24,7 @@ describe("analyzer dispatch", () => {
     let capturedOptions: Record<string, unknown> | undefined;
     let capturedContext: { systemPrompt?: string; messages: Array<{ content: Array<{ text: string }> }> } | undefined;
     const ctx = {
+      sessionManager: { getSessionId: () => "session-analyzer" },
       modelRegistry: {
         find: () => model,
         getApiKeyAndHeaders: async () => ({ ok: true }),
@@ -76,7 +77,7 @@ describe("analyzer dispatch", () => {
       ctx,
       units,
       "finish validation",
-      { ...DEFAULT_CONFIG, language: "en" },
+      { ...DEFAULT_CONFIG, language: "en", analyzerModel: "opencode-go/deepseek-v4.1-flash" },
       new AbortController().signal,
       undefined,
       undefined,
@@ -87,6 +88,11 @@ describe("analyzer dispatch", () => {
     expect(nodes.flatMap((node) => node.sourceUnitIds)).toEqual(["u0001", "u0002"]);
     expect(capturedOptions?.reasoningEffort).toBe("low");
     expect(capturedOptions?.maxTokens).toBe(8_000);
+    expect(capturedOptions?.sessionId).toBe("session-analyzer");
+    expect(capturedOptions?.headers).toEqual({
+      "x-opencode-session": "session-analyzer",
+      "x-opencode-client": "pi",
+    });
     expect(capturedOptions).not.toHaveProperty("temperature");
     expect(capturedContext?.systemPrompt).toContain("in English");
     expect(capturedContext?.systemPrompt).toContain("recommend drop for unrelated blocks");
@@ -120,6 +126,7 @@ describe("analyzer dispatch", () => {
     let maxInFlight = 0;
     let calls = 0;
     const ctx = {
+      sessionManager: { getSessionId: () => "session-hierarchy" },
       modelRegistry: {
         find: () => model,
         getApiKeyAndHeaders: async () => ({ ok: true }),
