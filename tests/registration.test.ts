@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -59,6 +62,7 @@ describe("extension registration", () => {
         isProjectTrusted: () => false,
         sessionManager: {
           getBranch: () => [],
+          getSessionId: () => "settings-session",
         },
         modelRegistry: {
           getAvailable: () => [{ provider: "deepseek", id: "deepseek-v4-flash", reasoning: true }],
@@ -79,8 +83,57 @@ describe("extension registration", () => {
     expect(appended?.customType).toBe(SESSION_SETTINGS_ENTRY);
     expect(appended?.data).toEqual({
       version: 1,
-      overrides: expect.objectContaining({ thinkingLevel: "medium", language: "zh" }),
+      overrides: { thinkingLevel: "medium" },
     });
+  });
+
+  test("/curate settings switches scope and writes a sparse global override", async () => {
+    let command: { handler(args: string, ctx: ExtensionCommandContext): Promise<void> } | undefined;
+    const api = {
+      registerCommand(name: string, value: unknown) {
+        if (name === "curate") command = value as typeof command;
+      },
+      on() {},
+      appendEntry() {},
+    } as unknown as ExtensionAPI;
+    contextCurator(api);
+
+    const root = mkdtempSync(join(tmpdir(), "curator-global-settings-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+    const draft = { ...settingsDraft(DEFAULT_CONFIG), thinkingLevel: "medium" as const };
+    const results = [
+      { type: "scope", scope: "global", draft: settingsDraft(DEFAULT_CONFIG) },
+      { type: "save", draft },
+    ];
+    try {
+      const ctx = {
+        hasUI: true,
+        mode: "tui",
+        cwd: join(root, "project"),
+        isProjectTrusted: () => true,
+        sessionManager: {
+          getBranch: () => [],
+          getSessionId: () => "settings-global",
+        },
+        modelRegistry: {
+          getAvailable: () => [{ provider: "deepseek", id: "deepseek-v4-flash", reasoning: true }],
+          find: () => ({ provider: "deepseek", id: "deepseek-v4-flash", reasoning: true }),
+        },
+        ui: {
+          custom: async () => results.shift(),
+          notify() {},
+        },
+      } as unknown as ExtensionCommandContext;
+      await command?.handler("settings", ctx);
+      expect(JSON.parse(readFileSync(join(root, "agent", "context-curator.json"), "utf8"))).toEqual({
+        thinkingLevel: "medium",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    }
   });
 
   test("popup mode schedules curator once per context pressure band", async () => {

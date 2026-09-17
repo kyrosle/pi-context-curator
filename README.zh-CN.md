@@ -43,7 +43,7 @@ flowchart LR
 - 支持手动或自动触发 Curator。
 - 新输入优先：排队的 RPC、intercom 或其他输入会关闭任何已经过时的 Curator，并且不会吞掉该输入。
 - 紧急区提供 `B`，可明确选择 Pi 原生 compaction。
-- Session 级设置存储在模型不可见的 custom entry 中。
+- 在同一个设置窗口管理全局、受信任项目和当前 session；session 记录不会进入模型上下文。
 - 支持中英文界面、checkpoint 和分析模型输出语言。
 - 直接从 Pi ModelRegistry 选择分析模型和 thinking level。
 - 大上下文支持受控并发的分层分析。
@@ -101,7 +101,7 @@ pi -e /absolute/path/to/pi-context-curator/index.ts
 | 命令 | 作用 |
 | --- | --- |
 | `/curate [focus]` | 分析可压缩前缀并打开交互树。 |
-| `/curate settings` | 打开当前 session 的覆盖设置。 |
+| `/curate settings` | 编辑全局、受信任项目或当前 session 设置。 |
 | `/curate status` | 显示有效配置和当前上下文用量。 |
 | `/curate history` | 浏览当前分支上的全部 Curator checkpoint，查看内容不会进入模型上下文。 |
 | `/curate undo` | 把分支指针移动到最近一次 Curator checkpoint 之前，不删除历史。 |
@@ -119,7 +119,7 @@ pi -e /absolute/path/to/pi-context-curator/index.ts
 | `F` | 输入或替换自然语言策展指令，并重新生成方案。 |
 | `I` | 查看摘要、保留理由、依赖、证据和来源 ID。 |
 | `P` | 预览确定性 checkpoint。 |
-| `S` | 打开 session 设置；保存内容从下一次 `/curate` 生效。 |
+| `S` | 打开分层设置；保存内容从下一次 `/curate` 生效。 |
 | `H` | 切换 `boundary` 与 `handoff` 应用方式。 |
 | `A` | 应用 checkpoint；高风险选择需要再次按 `A`。 |
 | `B` | 仅在紧急阈值出现，关闭 Curator 并运行 Pi 原生 compaction。 |
@@ -307,6 +307,8 @@ Curator 是模态窗口：不能直接在窗口内部使用普通 composer 输�
 ```
 
 Session override 会保存为 Pi custom entry，跟随 session 分支历史，并且不会被转换成 LLM message。
+
+`/curate settings` 默认打开 Session 层。按 `Tab` 在 `Global → Project → Session` 之间切换，`S` 保存当前层，`R` 只清除当前层中由弹窗管理的字段。Pi 尚未信任当前项目时，Project 层不可用。Global 与 Project 保存会更新各自 JSON，同时保留弹窗未暴露的高级字段。每层只保存相对父层不同的值，因此以后修改父层时，未覆盖字段仍会正常继承。
 
 内置默认配置示例：
 

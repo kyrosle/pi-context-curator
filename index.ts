@@ -14,10 +14,14 @@ import { compactAutomatically } from "./src/native-compaction";
 import { compileCheckpoint, leafNodes } from "./src/compiler";
 import {
   applyConfigOverrides,
+  DEFAULT_CONFIG,
   findSessionOverrides,
   loadConfig,
+  loadConfigLayers,
   SESSION_SETTINGS_ENTRY,
   settingsDraft,
+  settingsOverrides,
+  writeSettingsOverrides,
 } from "./src/config";
 import { CuratorLoadingOverlay } from "./src/loading";
 import { CuratorOverlay } from "./src/overlay";
@@ -35,6 +39,7 @@ import type {
   CuratorPlanDetails,
   CuratorSettingsDraft,
   CuratorSettingsEntry,
+  CuratorSettingsScope,
   CompiledCheckpoint,
   PendingApplication,
   OverlayResult,
@@ -93,12 +98,16 @@ function notifyCuratorExit(
 
 function effectiveConfig(ctx: ExtensionContext): {
   config: ReturnType<typeof loadConfig>;
+  hasGlobalOverride: boolean;
+  hasProjectOverride: boolean;
   hasSessionOverride: boolean;
 } {
-  const base = loadConfig(agentDir(), ctx.cwd, ctx.isProjectTrusted());
+  const layers = loadConfigLayers(agentDir(), ctx.cwd, ctx.isProjectTrusted());
   const overrides = findSessionOverrides(ctx.sessionManager.getBranch());
   return {
-    config: applyConfigOverrides(base, overrides),
+    config: applyConfigOverrides(layers.project, overrides),
+    hasGlobalOverride: layers.hasGlobalOverride,
+    hasProjectOverride: layers.hasProjectOverride,
     hasSessionOverride: Object.keys(overrides).length > 0,
   };
 }
@@ -201,7 +210,7 @@ function formatContextWindow(tokens: number): string {
   return `${Math.round(tokens / 1_000)}K`;
 }
 
-async function editSessionSettings(
+async function editSettings(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
   cancelSignal?: AbortSignal,
@@ -219,9 +228,38 @@ async function editSessionSettings(
     return false;
   }
 
-  let draft = settingsDraft(resolved.config);
+  const projectTrusted = ctx.isProjectTrusted();
+  const layers = loadConfigLayers(agentDir(), ctx.cwd, projectTrusted);
+  const sessionOverrides = findSessionOverrides(ctx.sessionManager.getBranch());
+  const configs: Record<CuratorSettingsScope, ReturnType<typeof loadConfig>> = {
+    global: layers.global,
+    project: layers.project,
+    session: applyConfigOverrides(layers.project, sessionOverrides),
+  };
+  const drafts: Record<CuratorSettingsScope, CuratorSettingsDraft> = {
+    global: settingsDraft(configs.global),
+    project: settingsDraft(configs.project),
+    session: settingsDraft(configs.session),
+  };
+  const availableScopes: CuratorSettingsScope[] = projectTrusted
+    ? ["global", "project", "session"]
+    : ["global", "session"];
+  const hasOverride: Record<CuratorSettingsScope, boolean> = {
+    global: layers.hasGlobalOverride,
+    project: layers.hasProjectOverride,
+    session: Object.keys(sessionOverrides).length > 0,
+  };
+  const targets: Record<CuratorSettingsScope, string> = {
+    global: layers.globalPath,
+    project: projectTrusted
+      ? layers.projectPath
+      : localize(resolved.config.language, "项目未信任，项目设置不可写", "Project is untrusted; project settings are unavailable"),
+    session: `session:${ctx.sessionManager.getSessionId()}`,
+  };
+  let scope: CuratorSettingsScope = "session";
   while (true) {
     if (cancelSignal?.aborted) return false;
+    let draft: CuratorSettingsDraft = drafts[scope];
     const slash = draft.analyzerModel.indexOf("/");
     const draftModel = slash > 0
       ? ctx.modelRegistry.find(
@@ -235,10 +273,11 @@ async function editSessionSettings(
         ? clampThinkingLevel(draftModel, draft.thinkingLevel)
         : "off";
     }
+    drafts[scope] = draft;
     let detachAbort: (() => void) | undefined;
     let result: SettingsOverlayResult | undefined;
     try {
-      result = await ctx.ui.custom<SettingsOverlayResult>((tui, theme, _keybindings, done) => {
+      result = await ctx.ui.custom<SettingsOverlayResult>((tui, theme, _keybindings, done): CuratorSettingsOverlay => {
         let settled = false;
         const finish = (value: SettingsOverlayResult) => {
           if (settled) return;
@@ -258,7 +297,10 @@ async function editSessionSettings(
           theme,
           draft,
           [...thinkingLevels],
-          resolved.hasSessionOverride,
+          scope,
+          availableScopes,
+          hasOverride[scope],
+          targets[scope],
           finish,
         );
       }, {
@@ -270,8 +312,14 @@ async function editSessionSettings(
     }
 
     if (cancelSignal?.aborted || !result || result.type === "cancel") return false;
+    if (result.type === "scope") {
+      drafts[scope] = result.draft;
+      scope = result.scope;
+      continue;
+    }
     if (result.type === "choose-model") {
       draft = result.draft;
+      drafts[scope] = draft;
       const choices = ctx.modelRegistry
         .getAvailable()
         .map((model) => {
@@ -307,19 +355,29 @@ async function editSessionSettings(
         if (selectedModel) {
           draft.thinkingLevel = clampThinkingLevel(selectedModel, draft.thinkingLevel);
         }
+        drafts[scope] = draft;
       }
       continue;
     }
     if (result.type === "reset") {
-      pi.appendEntry<CuratorSettingsEntry>(SESSION_SETTINGS_ENTRY, {
-        version: 1,
-        overrides: {},
-      });
+      try {
+        if (scope === "session") {
+          pi.appendEntry<CuratorSettingsEntry>(SESSION_SETTINGS_ENTRY, {
+            version: 1,
+            overrides: {},
+          });
+        } else {
+          writeSettingsOverrides(scope === "global" ? layers.globalPath : layers.projectPath, {});
+        }
+      } catch (error) {
+        ctx.ui.notify(String(error), "error");
+        return false;
+      }
       ctx.ui.notify(
         localize(
           draft.language,
-          "已清除当前 session 的 Context Curator 覆盖设置。",
-          "Cleared Context Curator overrides for the current session.",
+          `已清除 ${scope} 层的 Context Curator 覆盖设置。`,
+          `Cleared Context Curator overrides in the ${scope} scope.`,
         ),
         "info",
       );
@@ -327,6 +385,7 @@ async function editSessionSettings(
     }
 
     draft = result.draft;
+    drafts[scope] = draft;
     const savedSlash = draft.analyzerModel.indexOf("/");
     const provider = savedSlash > 0 ? draft.analyzerModel.slice(0, savedSlash) : "";
     const modelId = savedSlash > 0 ? draft.analyzerModel.slice(savedSlash + 1) : "";
@@ -347,15 +406,30 @@ async function editSessionSettings(
     }
     draft.thinkingLevel = clampThinkingLevel(model, draft.thinkingLevel);
 
-    pi.appendEntry<CuratorSettingsEntry>(SESSION_SETTINGS_ENTRY, {
-      version: 1,
-      overrides: { ...draft },
-    });
+    const inherited = scope === "global"
+      ? DEFAULT_CONFIG
+      : scope === "project"
+        ? configs.global
+        : configs.project;
+    const overrides = settingsOverrides(draft, inherited);
+    try {
+      if (scope === "session") {
+        pi.appendEntry<CuratorSettingsEntry>(SESSION_SETTINGS_ENTRY, {
+          version: 1,
+          overrides,
+        });
+      } else {
+        writeSettingsOverrides(scope === "global" ? layers.globalPath : layers.projectPath, overrides);
+      }
+    } catch (error) {
+      ctx.ui.notify(String(error), "error");
+      return false;
+    }
     ctx.ui.notify(
       localize(
         draft.language,
-        `Context Curator session 设置已保存：${draft.analyzerModel} (${draft.thinkingLevel})。`,
-        `Context Curator session settings saved: ${draft.analyzerModel} (${draft.thinkingLevel}).`,
+        `Context Curator ${scope} 设置已保存：${draft.analyzerModel} (${draft.thinkingLevel})。`,
+        `Context Curator ${scope} settings saved: ${draft.analyzerModel} (${draft.thinkingLevel}).`,
       ),
       "info",
     );
@@ -399,7 +473,7 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
         `Curate 触发：${config.triggerMode}`,
         `跨 Provider 确认：${config.confirmCrossProvider ? "每个分析模型/进程一次" : "关闭（配置视为已授权）"}`,
         `分析并发：${config.maxConcurrentAnalyzerCalls}（仅分层分组）`,
-        `Session override：${resolved.hasSessionOverride ? "已启用" : "无"}`,
+        `设置层：Global ${resolved.hasGlobalOverride ? "覆盖" : "继承"} · Project ${resolved.hasProjectOverride ? "覆盖" : "继承"} · Session ${resolved.hasSessionOverride ? "覆盖" : "继承"}`,
         `Raw tail：${config.rawTailTokens} tokens`,
         `Checkpoint 目标：${config.targetCheckpointTokens} tokens`,
         `分块宽度：2–${config.maxBlocksPerSplit}`,
@@ -415,7 +489,7 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
         `curate trigger: ${config.triggerMode}`,
         `cross-provider confirmation: ${config.confirmCrossProvider ? "once per analyzer/process" : "disabled (configured consent)"}`,
         `analyzer concurrency: ${config.maxConcurrentAnalyzerCalls} (hierarchical groups only)`,
-        `session override: ${resolved.hasSessionOverride ? "active" : "none"}`,
+        `settings scopes: Global ${resolved.hasGlobalOverride ? "override" : "inherit"} · Project ${resolved.hasProjectOverride ? "override" : "inherit"} · Session ${resolved.hasSessionOverride ? "override" : "inherit"}`,
         `raw tail: ${config.rawTailTokens} tokens`,
         `checkpoint target: ${config.targetCheckpointTokens} tokens`,
         `split width: 2–${config.maxBlocksPerSplit}`,
@@ -1063,7 +1137,7 @@ async function runCuratorSession(
 
     if (result?.type === "settings") {
       applyMode = result.applyMode;
-      const changed = await editSessionSettings(pi, ctx, cancelSignal);
+      const changed = await editSettings(pi, ctx, cancelSignal);
       if (cancelSignal?.aborted) {
         notifyCuratorExit(ctx, config.language, trigger, true);
         return;
@@ -1336,7 +1410,7 @@ export default function contextCurator(pi: ExtensionAPI): void {
       }
       const command = trimmed.toLowerCase();
       if (command === "settings") {
-        await editSessionSettings(pi, ctx);
+        await editSettings(pi, ctx);
         return;
       }
       if (command === "status") return showStatus(ctx);

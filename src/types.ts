@@ -129,6 +129,7 @@ export type CuratorSettingsDraft = Pick<
 >;
 
 export type CuratorSessionOverrides = Partial<CuratorSettingsDraft>;
+export type CuratorSettingsScope = "global" | "project" | "session";
 
 export interface CuratorSettingsEntry {
   version: 1;
@@ -137,6 +138,7 @@ export interface CuratorSettingsEntry {
 
 export type SettingsOverlayResult =
   | { type: "cancel" }
+  | { type: "scope"; scope: CuratorSettingsScope; draft: CuratorSettingsDraft }
   | { type: "choose-model"; draft: CuratorSettingsDraft }
   | { type: "save"; draft: CuratorSettingsDraft }
   | { type: "reset" };

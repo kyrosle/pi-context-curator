@@ -8,7 +8,11 @@ import {
   type TUI,
 } from "@earendil-works/pi-tui";
 import { languageName, localize } from "./i18n";
-import type { CuratorSettingsDraft, SettingsOverlayResult } from "./types";
+import type {
+  CuratorSettingsDraft,
+  CuratorSettingsScope,
+  SettingsOverlayResult,
+} from "./types";
 
 type SettingKey = keyof CuratorSettingsDraft;
 type LocalizedCopy = { zh: string; en: string };
@@ -75,6 +79,7 @@ const ROWS: Array<{ key: SettingKey; label: LocalizedCopy; hint: LocalizedCopy }
 ];
 
 const LANGUAGES: CuratorSettingsDraft["language"][] = ["zh", "en"];
+const SCOPES: CuratorSettingsScope[] = ["global", "project", "session"];
 const TRIGGER_MODES: CuratorSettingsDraft["triggerMode"][] = ["manual", "auto"];
 const RAW_TAIL_CHOICES = [4_000, 8_000, 12_000, 16_000, 24_000, 32_000, 48_000, 64_000, 96_000];
 const CHECKPOINT_CHOICES = [8_000, 12_000, 18_000, 24_000, 32_000, 48_000, 64_000, 96_000, 128_000];
@@ -141,7 +146,10 @@ export class CuratorSettingsOverlay implements Component {
     private readonly theme: Theme,
     initial: CuratorSettingsDraft,
     private readonly thinkingLevels: CuratorSettingsDraft["thinkingLevel"][],
-    private readonly hasSessionOverride: boolean,
+    private readonly scope: CuratorSettingsScope,
+    private readonly availableScopes: CuratorSettingsScope[],
+    private readonly hasScopeOverride: boolean,
+    private readonly target: string,
     private readonly done: (result: SettingsOverlayResult) => void,
   ) {
     this.draft = { ...initial };
@@ -209,6 +217,12 @@ export class CuratorSettingsOverlay implements Component {
       this.done({ type: "cancel" });
       return;
     }
+    if (matchesKey(data, Key.tab)) {
+      const index = this.availableScopes.indexOf(this.scope);
+      const scope = this.availableScopes[(index + 1) % this.availableScopes.length];
+      this.done({ type: "scope", scope, draft: { ...this.draft } });
+      return;
+    }
     if (data.toLowerCase() === "s") {
       this.done({ type: "save", draft: { ...this.draft } });
       return;
@@ -236,20 +250,36 @@ export class CuratorSettingsOverlay implements Component {
     const language = this.draft.language;
     const inner = Math.max(24, width - 4);
     const labelWidth = 20;
+    const scopeNames: Record<CuratorSettingsScope, LocalizedCopy> = {
+      global: { zh: "全局", en: "Global" },
+      project: { zh: "项目", en: "Project" },
+      session: { zh: "会话", en: "Session" },
+    };
+    const scopeTabs = SCOPES.map((candidate) => {
+      const label = scopeNames[candidate][language];
+      if (!this.availableScopes.includes(candidate)) return this.theme.fg("dim", `${label}×`);
+      return candidate === this.scope ? this.theme.fg("accent", `[${label}]`) : label;
+    }).join("  ");
+    const inherited = this.scope === "global"
+      ? localize(language, "内置默认值", "built-in defaults")
+      : this.scope === "project"
+        ? localize(language, "全局设置", "global settings")
+        : localize(language, "项目/全局设置", "project/global settings");
     const lines = [
-      this.theme.bold(localize(language, "当前 session 的覆盖设置", "Current session overrides")),
+      `${this.theme.bold(localize(language, "作用域", "Scope"))}: ${scopeTabs}`,
+      this.theme.fg("dim", this.target),
       this.theme.fg(
         "muted",
-        this.hasSessionOverride
+        this.hasScopeOverride
           ? localize(
               language,
-              "已存在 session override；它优先于项目与全局 JSON。",
-              "A session override is active and takes precedence over project and global JSON.",
+              `当前层已有弹窗设置覆盖；其余字段继承自${inherited}。`,
+              `This scope has popup-managed overrides; other fields inherit from ${inherited}.`,
             )
           : localize(
               language,
-              "尚无 session override；当前显示项目/全局配置的有效值。",
-              "No session override yet; showing effective project/global values.",
+              `当前层没有弹窗设置覆盖；显示从${inherited}继承的值。`,
+              `No popup-managed overrides in this scope; showing values inherited from ${inherited}.`,
             ),
       ),
       this.theme.fg(
@@ -281,8 +311,8 @@ export class CuratorSettingsOverlay implements Component {
         "muted",
         localize(
           language,
-          "↑↓ 选择 · ←→/Enter 修改 · S 保存 · R 清除 session override · Esc 取消",
-          "↑↓ Select · ←→/Enter Change · S Save · R Clear session override · Esc Cancel",
+          "Tab 切换作用域 · ↑↓ 选择 · ←→/Enter 修改 · S 保存 · R 重置本页字段 · Esc 取消",
+          "Tab Scope · ↑↓ Select · ←→/Enter Change · S Save · R Reset shown fields · Esc Cancel",
         ),
       ),
     ];

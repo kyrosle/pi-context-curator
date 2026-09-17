@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type {
   CuratorConfig,
@@ -9,6 +9,20 @@ import type {
 } from "./types";
 
 export const SESSION_SETTINGS_ENTRY = "pi-context-curator-settings";
+
+const SETTINGS_KEYS: Array<keyof CuratorSettingsDraft> = [
+  "language",
+  "analyzerModel",
+  "thinkingLevel",
+  "triggerMode",
+  "confirmCrossProvider",
+  "maxConcurrentAnalyzerCalls",
+  "rawTailTokens",
+  "targetCheckpointTokens",
+  "maxAnalyzerInputTokens",
+  "maxBlocksPerSplit",
+  "defaultApplyMode",
+];
 
 export const DEFAULT_CONFIG: CuratorConfig = {
   enabled: true,
@@ -103,26 +117,41 @@ function normalizeConfig(raw: Record<string, unknown>, fallback: CuratorConfig):
   };
 }
 
-export function loadConfig(agentDir: string, cwd: string, includeProjectConfig = true): CuratorConfig {
-  const candidates = [
-    join(agentDir, "context-curator.json"),
-    ...(includeProjectConfig ? [join(cwd, ".pi", "context-curator.json")] : []),
-  ];
-
-  let raw: Record<string, unknown> = {};
-  for (const path of candidates) {
-    if (!existsSync(path)) continue;
-    try {
-      const parsed = JSON.parse(readFileSync(path, "utf8"));
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        raw = { ...raw, ...(parsed as Record<string, unknown>) };
-      }
-    } catch {
-      // Invalid configuration is ignored. /curate status reports effective defaults.
-    }
+function readConfigObject(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
   }
+}
 
-  return normalizeConfig(raw, DEFAULT_CONFIG);
+function hasSettingsOverrides(raw: Record<string, unknown>): boolean {
+  return SETTINGS_KEYS.some((key) => Object.hasOwn(raw, key));
+}
+
+export function loadConfigLayers(agentDir: string, cwd: string, includeProjectConfig = true) {
+  const globalPath = join(agentDir, "context-curator.json");
+  const projectPath = join(cwd, ".pi", "context-curator.json");
+  const globalRaw = readConfigObject(globalPath);
+  const projectRaw = includeProjectConfig ? readConfigObject(projectPath) : {};
+  const global = normalizeConfig(globalRaw, DEFAULT_CONFIG);
+  const project = normalizeConfig(projectRaw, global);
+  return {
+    global,
+    project,
+    globalPath,
+    projectPath,
+    hasGlobalOverride: hasSettingsOverrides(globalRaw),
+    hasProjectOverride: includeProjectConfig && hasSettingsOverrides(projectRaw),
+  };
+}
+
+export function loadConfig(agentDir: string, cwd: string, includeProjectConfig = true): CuratorConfig {
+  return loadConfigLayers(agentDir, cwd, includeProjectConfig).project;
 }
 
 export function applyConfigOverrides(
@@ -146,6 +175,41 @@ export function settingsDraft(config: CuratorConfig): CuratorSettingsDraft {
     maxBlocksPerSplit: config.maxBlocksPerSplit,
     defaultApplyMode: config.defaultApplyMode,
   };
+}
+
+export function settingsOverrides(
+  draft: CuratorSettingsDraft,
+  inherited: CuratorConfig,
+): CuratorSessionOverrides {
+  const parent = settingsDraft(inherited);
+  return Object.fromEntries(
+    SETTINGS_KEYS
+      .filter((key) => draft[key] !== parent[key])
+      .map((key) => [key, draft[key]]),
+  ) as CuratorSessionOverrides;
+}
+
+/** Replace only popup-managed keys and preserve advanced/manual config fields. */
+export function writeSettingsOverrides(path: string, overrides: CuratorSessionOverrides): void {
+  let raw: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`Expected a JSON object in ${path}`);
+    }
+    raw = parsed as Record<string, unknown>;
+  }
+  for (const key of SETTINGS_KEYS) delete raw[key];
+  Object.assign(raw, overrides);
+
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(raw, null, 2)}\n`, { flag: "wx" });
+    renameSync(temporary, path);
+  } finally {
+    if (existsSync(temporary)) unlinkSync(temporary);
+  }
 }
 
 function sanitizeOverrides(raw: unknown): CuratorSessionOverrides {

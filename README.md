@@ -43,7 +43,7 @@ The analyzer proposes structure; it never applies compaction by itself. Final ap
 - Manual or automatic Curator triggering.
 - New-input priority: queued RPC, intercom, or other incoming input closes any stale Curator without consuming the input.
 - Emergency `B` action for explicitly choosing Pi native compaction.
-- Session-scoped settings stored outside model-visible context.
+- Global, trusted-project, and session settings managed from one popup; session entries stay outside model-visible context.
 - Chinese and English UI/checkpoint/analyzer-output selection.
 - Analyzer model and thinking level selected from Pi's existing ModelRegistry.
 - Bounded concurrent first-pass analysis for very large histories.
@@ -101,7 +101,7 @@ With no explicit focus argument, `/curate` uses the newest user request as the n
 | Command | Purpose |
 | --- | --- |
 | `/curate [focus]` | Analyze the compactable prefix and open the interactive tree. |
-| `/curate settings` | Open session-scoped Curator settings. |
+| `/curate settings` | Edit Global, trusted Project, or current Session settings. |
 | `/curate status` | Show effective configuration and current context usage. |
 | `/curate history` | Browse every Curator checkpoint on the current branch without adding it to model context. |
 | `/curate undo` | Move the branch pointer to before the latest Curator checkpoint. No history is deleted. |
@@ -119,7 +119,7 @@ With no explicit focus argument, `/curate` uses the newest user request as the n
 | `F` | Enter or replace a natural-language curation instruction and regenerate the plan. |
 | `I` | Inspect summary, rationale, dependencies, evidence, and source IDs. |
 | `P` | Preview the deterministic checkpoint. |
-| `S` | Open session settings. Saved values apply to the next `/curate`. |
+| `S` | Open scoped settings. Saved values apply to the next `/curate`. |
 | `H` | Toggle `boundary` and `handoff` application modes. |
 | `A` | Apply the checkpoint. Risky selections require a second `A`. |
 | `B` | At the emergency threshold only, close Curator and run Pi native compaction. |
@@ -307,6 +307,8 @@ current-session popup override
 ```
 
 Session overrides are persisted as Pi custom entries. They follow session branch history and are not converted into LLM messages.
+
+`/curate settings` opens on Session scope. Press `Tab` to cycle `Global → Project → Session`, `S` to save the current scope, and `R` to clear the popup-managed fields only in that scope. Project scope is unavailable until Pi trusts the current project. Global and Project saves update their JSON files while preserving advanced fields not exposed by the popup. Each layer stores only values that differ from its parent, so later parent changes continue to flow through uninvolved fields.
 
 Example using built-in defaults:
 
