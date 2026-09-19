@@ -5,6 +5,8 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
   type ExtensionContext,
+  ModelSelectorComponent,
+  type ModelRuntime,
   type SessionEntry,
   sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
@@ -205,11 +207,6 @@ async function confirmCrossProvider(
   return accepted;
 }
 
-function formatContextWindow(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M`;
-  return `${Math.round(tokens / 1_000)}K`;
-}
-
 async function editSettings(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
@@ -320,15 +317,8 @@ async function editSettings(
     if (result.type === "choose-model") {
       draft = result.draft;
       drafts[scope] = draft;
-      const choices = ctx.modelRegistry
-        .getAvailable()
-        .map((model) => {
-          const key = `${model.provider}/${model.id}`;
-          const label = `${key}${key === draft.analyzerModel ? "  ✓" : ""} · ${formatContextWindow(model.contextWindow)}${model.reasoning ? " · reasoning" : ""}`;
-          return { key, label };
-        })
-        .sort((a, b) => a.key.localeCompare(b.key));
-      if (choices.length === 0) {
+      const availableModels = ctx.modelRegistry.getAvailable();
+      if (availableModels.length === 0) {
         ctx.ui.notify(
           localize(
             draft.language,
@@ -339,18 +329,35 @@ async function editSettings(
         );
         continue;
       }
-      const selected = await ctx.ui.select(
-        localize(draft.language, "选择 Context Curator 分析模型", "Select Context Curator analyzer model"),
-        choices.map((choice) => choice.label),
-      );
+      const selected = await ctx.ui.custom<string | undefined>((tui, _theme, _keybindings, done) => {
+        const current = availableModels.find(
+          (model) => `${model.provider}/${model.id}` === draft.analyzerModel,
+        );
+        const runtime = {
+          refresh: (options?: Parameters<typeof ctx.modelRegistry.refresh>[0]) => ctx.modelRegistry.refresh(options),
+          getAvailableSnapshot: () => ctx.modelRegistry.getAvailable(),
+          getModel: (provider: string, modelId: string) => ctx.modelRegistry.find(provider, modelId),
+          getError: () => ctx.modelRegistry.getError(),
+        } as unknown as ModelRuntime;
+        return new ModelSelectorComponent(
+          tui,
+          current,
+          runtime,
+          [],
+          (model) => done(`${model.provider}/${model.id}`),
+          () => done(undefined),
+        );
+      }, {
+        overlay: true,
+        overlayOptions: { width: "78%", maxHeight: "90%", anchor: "center" },
+      });
       if (cancelSignal?.aborted) return false;
-      const choice = choices.find((item) => item.label === selected);
-      if (choice) {
-        draft.analyzerModel = choice.key;
-        const selectedSlash = choice.key.indexOf("/");
+      if (selected) {
+        draft.analyzerModel = selected;
+        const selectedSlash = selected.indexOf("/");
         const selectedModel = ctx.modelRegistry.find(
-          choice.key.slice(0, selectedSlash),
-          choice.key.slice(selectedSlash + 1),
+          selected.slice(0, selectedSlash),
+          selected.slice(selectedSlash + 1),
         );
         if (selectedModel) {
           draft.thinkingLevel = clampThinkingLevel(selectedModel, draft.thinkingLevel);

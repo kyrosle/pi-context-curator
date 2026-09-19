@@ -45,7 +45,7 @@ The analyzer proposes structure; it never applies compaction by itself. Final ap
 - Emergency `B` action for explicitly choosing Pi native compaction.
 - Global, trusted-project, and session settings managed from one popup; session entries stay outside model-visible context.
 - Chinese and English UI/checkpoint/analyzer-output selection.
-- Analyzer model and thinking level selected from Pi's existing ModelRegistry.
+- Analyzer model selected with Pi's searchable, fixed-height model picker; thinking level follows the selected model's capabilities.
 - Bounded concurrent first-pass analysis for very large histories.
 - Coverage, snapshot, dependency, and stale-session guards.
 - Read-only current-branch History with recovery from any listed archived summary and safe pre-curation forks.
@@ -276,7 +276,7 @@ The settings overlay redraws immediately after changing the language. Original r
 The analyzer is called through Pi's ModelRegistry. The extension does not implement a separate provider client or credential store.
 
 - `analyzerModel` uses `provider/model-id` syntax.
-- The settings popup lists Pi models that are currently available and authenticated.
+- The settings popup lists Pi models that are currently available and authenticated. The picker uses Pi's native fuzzy search, shows ten rows at a time, and scrolls with the normal selection keys.
 - Thinking choices come from the selected model's Pi metadata and are clamped when switching models.
 - The default selector is `deepseek/deepseek-v4-flash`; change it if that model is not present in your Pi installation.
 - With `confirmCrossProvider: true`, Pi asks once per analyzer model in each process before sending the compactable prefix to a provider different from the active chat provider.

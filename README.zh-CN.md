@@ -45,7 +45,7 @@ flowchart LR
 - 紧急区提供 `B`，可明确选择 Pi 原生 compaction。
 - 在同一个设置窗口管理全局、受信任项目和当前 session；session 记录不会进入模型上下文。
 - 支持中英文界面、checkpoint 和分析模型输出语言。
-- 直接从 Pi ModelRegistry 选择分析模型和 thinking level。
+- 使用 Pi 原生的可搜索、定高模型选择器选择分析模型，thinking level 跟随所选模型能力。
 - 大上下文支持受控并发的分层分析。
 - 包含来源覆盖、快照、依赖和 session 过期校验。
 - 提供当前分支的只读 History，可以恢复任意列表 checkpoint 的归档摘要，并安全 fork 到策展前。
@@ -276,7 +276,7 @@ Curator 是模态窗口：不能直接在窗口内部使用普通 composer 输�
 分析器直接通过 Pi ModelRegistry 调用。插件没有自己实现另一套 Provider client 或凭据存储。
 
 - `analyzerModel` 使用 `provider/model-id` 格式。
-- 设置窗口会列出 Pi 当前已经认证并可用的模型。
+- 设置窗口会列出 Pi 当前已经认证并可用的模型。选择器使用 Pi 原生模糊搜索，每次固定显示 10 行，并使用标准选择按键上下滚动。
 - Thinking 选项来自所选模型的 Pi metadata，切换模型时会自动 clamp。
 - 默认选择器是 `deepseek/deepseek-v4-flash`；如果你的 Pi 没有这个模型，请在设置中更换。
 - `confirmCrossProvider: true` 时，如果分析器 Provider 与当前聊天 Provider 不同，每个 Pi 进程、每个分析模型第一次发送前会询问一次。
